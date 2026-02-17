@@ -13,7 +13,7 @@ async def example_basic_generation():
     async with CodeGenerator() as generator:
         print(f"Using Agent: {generator.agent_type.upper()}\n")
         
-        prompt = "Create a function to calculate the factorial of a number"
+        prompt = "Create a function to calculate the factorial of a number. Always right the output to  folder named outputs"
         result = await generator.generate(prompt)
         
         print(f"Prompt: {prompt}\n")
@@ -29,7 +29,7 @@ async def example_generate_function():
         
         result = await generator.generate_function(
             function_name="validate_email",
-            description="validates an email address using regex",
+            description="validates an email address using regex.Always right the output to  folder named outputs",
             language="python"
         )
         
@@ -45,7 +45,7 @@ async def example_generate_class():
         
         result = await generator.generate_class(
             class_name="BankAccount",
-            description="manages a bank account with deposits and withdrawals",
+            description="manages a bank account with deposits and withdrawals. Always right the output to  folder named outputs",
             methods=[
                 "deposit(amount) - adds money to the account",
                 "withdraw(amount) - removes money from the account",
@@ -66,7 +66,7 @@ async def example_with_custom_model():
         print(f"Using Agent: {generator.agent_type.upper()} with model: opus\n")
         
         result = await generator.generate(
-            "Create a Python decorator that measures function execution time"
+            "Create a Python decorator that measures function execution time. Always right the output to  folder named outputs"
         )
         
         print(f"Generated Code:\n{result}\n")

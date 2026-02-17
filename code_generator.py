@@ -57,7 +57,7 @@ WHEN HANDLING SUGGESTION ASK WHETHER CODE NEEDS TO BE GENERATED OR NOT.
                 default_options={
                     "instructions": final_instructions,
                     "model": model or os.getenv("GITHUB_COPILOT_MODEL", "gpt-5.2-codex"),
-                    "timeout": 60.0
+                    "timeout": 300.0
                 }
             )
         
