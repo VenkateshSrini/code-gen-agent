@@ -28,8 +28,17 @@ class CodeGenerator:
         self.agent_type = agent_type or os.getenv("AGENT_TYPE", "github_copilot").lower()
         
         default_instructions = """
-You are an expert TECHNICAL ARCHITECT. Your are an expert
-in generating clean, well-documented, and idiomatic code based on the user's requirements.
+You are an expert TECHNICAL ARCHITECT and code generator.
+
+CRITICAL INSTRUCTION:
+- NEVER respond with conversational messages like "I'll create...", "Plan written to...", or "Do you want me to..."
+- ALWAYS provide the COMPLETE, ACTUAL CONTENT that is requested
+- If asked for a plan, provide the FULL PLAN content in Markdown format
+- If asked for code, provide the COMPLETE CODE
+- If asked for tasks, provide the FULL TASK LIST
+- NO summaries, NO placeholders, NO meta-responses
+
+You generate clean, well-documented, and idiomatic code based on the user's requirements.
 You follow well defined design patterns. You always ensure that the code that is generated
 by you does not have any syntax errors, performance issues, or security vulnerabilities. 
 You should also ensure that there are no memory leaks in the code you generate. 
@@ -102,12 +111,35 @@ WHEN HANDLING SUGGESTION ASK WHETHER CODE NEEDS TO BE GENERATED OR NOT.
         if context:
             full_prompt = f"Context: {context}\n\nTask: {prompt}"
         
-        response = await self.agent.run(full_prompt)
+        # Run agent with explicit parameters - this returns an AgentResponse
+        response = await self.agent.run(messages=full_prompt, stream=False)
         
-        # Extract text from response messages
-        if response.messages:
-            return "\n".join([msg.text for msg in response.messages])
-        return "No response generated"
+        # Collect all messages from the final response
+        full_text = []
+        
+        try:
+            # The response object should have messages attribute with all content
+            if hasattr(response, 'messages'):
+                for msg in response.messages:
+                    if hasattr(msg, 'text') and msg.text:
+                        full_text.append(msg.text)
+                    elif hasattr(msg, 'content'):
+                        if isinstance(msg.content, str):
+                            full_text.append(msg.content)
+                        elif isinstance(msg.content, list):
+                            for item in msg.content:
+                                if hasattr(item, 'text') and item.text:
+                                    full_text.append(item.text)
+                                elif isinstance(item, str):
+                                    full_text.append(item)
+        except Exception as e:
+            print(f"Error during generation: {e}")
+            import traceback
+            traceback.print_exc()
+            return f"Error: {e}"
+        
+        result = "\n".join(full_text) if full_text else "No response generated"
+        return result
     
     async def generate_function(self, function_name: str, description: str, 
                                language: str = "python") -> str:

@@ -156,7 +156,7 @@ async def example_4_plan_only():
             
             print("\n✓ Plan generated!")
             print(f"  Length: {len(plan)} characters")
-            print(f"  Saved to: document/co-pilot/outputs/plan.md")
+            print(f"  Saved to: document/co-pilot/plan.md")
             
     except Exception as e:
         print(f"\n✗ Error: {e}")
@@ -246,7 +246,7 @@ async def example_6_compare_agents():
     print("\nTo run:")
     print("1. Copy constitution.md and spec.md to both directories")
     print("2. Run full workflow for each agent")
-    print("3. Compare the outputs in document/co-pilot/outputs/ and document/anthropic/outputs/")
+    print("3. Compare the outputs (.md files will be in the same directory as spec.md)")
 
 
 async def example_7_custom_tech_stack():

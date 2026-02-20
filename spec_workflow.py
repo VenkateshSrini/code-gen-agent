@@ -54,6 +54,7 @@ class PlanData:
     """Data structure for generated plan."""
     plan: str
     tech_stack: str
+    context: ContextData  # Include context for next executors
 
 
 @dataclass
@@ -61,6 +62,8 @@ class TasksData:
     """Data structure for generated tasks."""
     tasks: str
     task_count: int
+    plan: str  # Include plan for implementation
+    context: ContextData  # Include context for implementation
 
 
 @dataclass
@@ -117,7 +120,7 @@ class LoadContextExecutor(Executor):
             raise FileNotFoundError(f"Constitution not found: {constitution_path}")
         
         constitution = constitution_path.read_text(encoding='utf-8')
-        print(f"✓ Loaded constitution ({len(constitution)} chars)")
+        print(f"[OK] Loaded constitution ({len(constitution)} chars)")
         
         # Read spec
         spec_path = base_path / "spec.md"
@@ -125,7 +128,7 @@ class LoadContextExecutor(Executor):
             raise FileNotFoundError(f"Spec not found: {spec_path}")
         
         spec = spec_path.read_text(encoding='utf-8')
-        print(f"✓ Loaded specification ({len(spec)} chars)")
+        print(f"[OK] Loaded specification ({len(spec)} chars)")
         
         # Pass context data to next executor
         context_data = ContextData(
@@ -186,24 +189,18 @@ class GeneratePlanExecutor(Executor):
         )
         
         # Generate plan using CodeGenerator
-        print("\n⏳ Generating plan (this may take a moment)...")
+        print("\n[...] Generating plan (this may take a moment)...")
         plan = await self.code_generator.generate(prompt)
         
-        print(f"✓ Plan generated ({len(plan)} chars)")
+        print(f"[OK] Plan generated ({len(plan)} chars)")
         
-        # Save plan to file
-        outputs_dir = context.base_dir / "outputs"
-        outputs_dir.mkdir(exist_ok=True)
-        plan_file = outputs_dir / "plan.md"
+        # Save plan to file (same directory as spec.md)
+        plan_file = context.base_dir / "plan.md"
         plan_file.write_text(plan, encoding='utf-8')
-        print(f"✓ Plan saved to: {plan_file}")
+        print(f"[OK] Plan saved to: {plan_file}")
         
-        # Store context and plan in workflow context for next executor
-        ctx.context["context"] = context
-        ctx.context["tech_stack"] = tech_stack
-        
-        # Send plan data to next executor
-        plan_data = PlanData(plan=plan, tech_stack=tech_stack)
+        # Send plan data with full context to next executor
+        plan_data = PlanData(plan=plan, tech_stack=tech_stack, context=context)
         await ctx.send_message(plan_data)
     
     async def cleanup(self):
@@ -223,6 +220,7 @@ class GenerateTasksExecutor(Executor):
         super().__init__(id=id)
         self.agent_type = agent_type
         self.code_generator: Optional[CodeGenerator] = None
+        self._tasks_data: Optional[TasksData] = None  # Store for approval response
     
     async def _ensure_generator(self):
         """Initialize code generator if not already started."""
@@ -245,8 +243,8 @@ class GenerateTasksExecutor(Executor):
         """
         await self._ensure_generator()
         
-        # Retrieve context from previous executor
-        context: ContextData = ctx.context["context"]
+        # Get context from plan_data
+        context: ContextData = plan_data.context
         
         print(f"\n{'='*60}")
         print("PHASE 3: Generating Task Breakdown")
@@ -261,23 +259,25 @@ class GenerateTasksExecutor(Executor):
         )
         
         # Generate tasks using CodeGenerator
-        print("\n⏳ Breaking down plan into tasks...")
+        print("\n[...] Breaking down plan into tasks...")
         tasks = await self.code_generator.generate(prompt)
         
         # Count tasks
         task_count = tasks.count('- [ ] T')
-        print(f"✓ Generated {task_count} tasks ({len(tasks)} chars)")
+        print(f"[OK] Generated {task_count} tasks ({len(tasks)} chars)")
         
-        # Save tasks to file
-        outputs_dir = context.base_dir / "outputs"
-        tasks_file = outputs_dir / "tasks.md"
+        # Save tasks to file (same directory as spec.md)
+        tasks_file = context.base_dir / "tasks.md"
         tasks_file.write_text(tasks, encoding='utf-8')
-        print(f"✓ Tasks saved to: {tasks_file}")
+        print(f"[OK] Tasks saved to: {tasks_file}")
         
-        # Store tasks in context for implementation phase
-        ctx.context["tasks"] = tasks
-        ctx.context["plan"] = plan_data.plan
-        
+        # Create tasks data for next executor
+        tasks_data = TasksData(
+            tasks=tasks,
+            task_count=task_count,
+            plan=plan_data.plan,
+            context=context
+        )
         # Create approval request
         # Show first 500 chars of tasks as preview
         preview_length = min(500, len(tasks))
@@ -304,13 +304,16 @@ class GenerateTasksExecutor(Executor):
             request_data=approval_request,
             response_type=bool,  # Expecting True/False response
         )
+        
+        # Store tasks_data to send after approval
+        self._tasks_data = tasks_data
     
     @response_handler
     async def on_approval_response(
         self,
         original_request: ApprovalRequest,
         approved: bool,
-        ctx: WorkflowContext[str],
+        ctx: WorkflowContext[TasksData],
     ) -> None:
         """
         Handle human approval response.
@@ -321,11 +324,11 @@ class GenerateTasksExecutor(Executor):
             ctx: Workflow context
         """
         if approved:
-            print("\n✓ Tasks approved. Proceeding to implementation...")
-            # Send approval signal to next executor
-            await ctx.send_message("approved")
+            print("\n[OK] Tasks approved. Proceeding to implementation...")
+            # Send tasks data to implementation executor
+            await ctx.send_message(self._tasks_data)
         else:
-            print("\n✗ Tasks rejected. Workflow terminated.")
+            print("\n[X] Tasks rejected. Workflow terminated.")
             # Yield output and stop workflow
             await ctx.yield_output("Workflow cancelled by user")
             # Note: The workflow will complete when there's no more work
@@ -357,26 +360,22 @@ class ExecuteImplementationExecutor(Executor):
     @handler
     async def execute(
         self,
-        approval_status: str,
+        tasks_data: TasksData,
         ctx: WorkflowContext[ImplementationData]
     ) -> None:
         """
         Execute implementation after approval.
         
         Args:
-            approval_status: Should be "approved"
+            tasks_data: Tasks data including context, plan, and tasks
             ctx: Workflow context
         """
-        if approval_status != "approved":
-            print(f"⚠️ Unexpected status: {approval_status}")
-            return
-        
         await self._ensure_generator()
         
-        # Retrieve context from previous executors
-        context: ContextData = ctx.context["context"]
-        plan: str = ctx.context["plan"]
-        tasks: str = ctx.context["tasks"]
+        # Get all needed data from tasks_data
+        context = tasks_data.context
+        plan = tasks_data.plan
+        tasks = tasks_data.tasks
         
         print(f"\n{'='*60}")
         print("PHASE 4: Executing Implementation")
@@ -392,20 +391,22 @@ class ExecuteImplementationExecutor(Executor):
         )
         
         # Generate implementation
-        print("\n⏳ Implementing all tasks (this will take several minutes)...")
+        print("\n[...] Implementing all tasks (this will take several minutes)...")
         implementation = await self.code_generator.generate(prompt)
         
-        print(f"✓ Implementation generated ({len(implementation)} chars)")
+        print(f"[OK] Implementation generated ({len(implementation)} chars)")
         
-        # Save full implementation output
-        outputs_dir = context.base_dir / "outputs"
-        impl_file = outputs_dir / "implementation.md"
+        # Save full implementation output (same directory as spec.md)
+        impl_file = context.base_dir / "implementation.md"
         impl_file.write_text(implementation, encoding='utf-8')
-        print(f"✓ Full implementation saved to: {impl_file}")
+        print(f"[OK] Full implementation saved to: {impl_file}")
+        
+        # Create outputs directory for code files
+        outputs_dir = context.base_dir / "outputs"
         
         # Extract and save individual code files
         generated_files = []
-        print("\n📁 Extracting code files...")
+        print("\n Extracting code files...")
         code_blocks = self._extract_code_blocks(implementation)
         
         for block in code_blocks:
@@ -424,9 +425,9 @@ class ExecuteImplementationExecutor(Executor):
                 saved_path.write_text(block['code'], encoding='utf-8')
                 
                 generated_files.append(str(saved_path))
-                print(f"  ✓ {block['filename']}")
+                print(f"  [OK] {block['filename']}")
         
-        print(f"\n✓ Implementation complete!")
+        print(f"\n[OK] Implementation complete!")
         print(f"  Generated {len(generated_files)} code files")
         
         # Yield final output
@@ -561,6 +562,9 @@ async def run_spec_workflow(
         tech_stack=tech_stack
     )
     
+    # Initialize result variable to track workflow output
+    result: Optional[ImplementationData] = None
+    
     # Start workflow with base_dir and tech_stack as input
     # The workflow will pause at the approval gate
     stream = workflow.run(
@@ -569,12 +573,16 @@ async def run_spec_workflow(
     )
     
     # Process events and handle approval requests
-    pending_responses = await _process_event_stream(stream)
+    pending_responses, result_data = await _process_event_stream(stream)
+    if result_data:
+        result = result_data
     
     # Continue workflow with approval responses
     while pending_responses is not None:
         stream = workflow.run(stream=True, responses=pending_responses)
-        pending_responses = await _process_event_stream(stream)
+        pending_responses, result_data = await _process_event_stream(stream)
+        if result_data:
+            result = result_data
     
     # The workflow should have yielded the final ImplementationData
     # For now, we'll retrieve it from the last output event
@@ -584,14 +592,16 @@ async def run_spec_workflow(
     print("WORKFLOW COMPLETE!")
     print(f"{'='*70}\n")
     
-    # Note: The actual result would be captured from output events
-    # This is a placeholder return
-    return result  # type: ignore
+    # Return the captured result or raise error if not found
+    if result is None:
+        raise RuntimeError("Workflow did not produce expected ImplementationData output")
+    
+    return result
 
 
 async def _process_event_stream(
     stream: AsyncIterable[WorkflowEvent]
-) -> Optional[Dict[str, Any]]:
+) -> tuple[Optional[Dict[str, Any]], Optional[ImplementationData]]:
     """
     Process workflow events and collect human approval requests.
     
@@ -599,23 +609,36 @@ async def _process_event_stream(
         stream: Stream of workflow events
     
     Returns:
-        Dict of request_id -> response, or None if no pending requests
+        Tuple of:
+        - Dict of request_id -> response (None if no pending requests)
+        - ImplementationData if yielded by workflow (None otherwise)
     """
     requests: List[tuple[str, ApprovalRequest]] = []
+    result_data: Optional[ImplementationData] = None
+    event_count = 0
     
     async for event in stream:
+        event_count += 1
+
+        # Surface executor failures immediately so they are not silently swallowed
+        if event.type == "executor_failed":
+            error_msg = str(event.details) if hasattr(event, 'details') and event.details else "unknown error"
+            print(f"\n[EXECUTOR FAILED] {event.executor_id}: {error_msg}")
+            # Re-raise so the caller sees the real error instead of a misleading RuntimeError
+            raise RuntimeError(f"Executor '{event.executor_id}' failed: {error_msg}")
+
         # Handle info requests (approval gates)
         if event.type == "request_info" and isinstance(event.data, ApprovalRequest):
             requests.append((event.request_id, event.data))
-        
+
         # Handle output events (progress messages)
         elif event.type == "output":
             if isinstance(event.data, str):
-                print(f"[{event.executor_id}] {event.data}")
+                print(f"  [{event.executor_id}] {event.data}")
             elif isinstance(event.data, ImplementationData):
-                # Store final result
-                global result
-                result = event.data
+                result_data = event.data
+
+    print(f"[STREAM] {event_count} events processed, pending_approvals={len(requests)}, has_result={result_data is not None}")
     
     # If there are pending approval requests, collect responses
     if requests:
@@ -638,9 +661,9 @@ async def _process_event_stream(
                 else:
                     print("Please enter 'yes' or 'no'")
         
-        return responses
+        return responses, result_data
     
-    return None
+    return None, result_data
 
 
 # Example usage
@@ -659,7 +682,7 @@ if __name__ == "__main__":
             tech_stack=tech_stack
         )
         
-        print(f"\n✓ Generated {result.file_count} code files")
-        print(f"✓ Output directory: {Path(base_dir) / 'outputs'}")
+        print(f"\n[OK] Generated {result.file_count} code files")
+        print(f"[OK] Output directory: {Path(base_dir) / 'outputs'}")
     
     asyncio.run(main())

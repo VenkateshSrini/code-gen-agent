@@ -38,8 +38,8 @@ class ContextManager:
             base_dir: Base directory containing constitution.md and spec.md
         """
         self.base_dir = Path(base_dir)
+        # outputs_dir used only for code files, not .md files
         self.outputs_dir = self.base_dir / "outputs"
-        self.outputs_dir.mkdir(exist_ok=True)
     
     def read_file(self, filename: str) -> str:
         """Read a file from the base directory."""
@@ -52,16 +52,23 @@ class ContextManager:
         """
         Write content to a file.
         
+        .md files are written to base_dir (same as spec.md).
+        Other files go to outputs/ subdirectory.
+        
         Args:
             filename: Name of the file
             content: Content to write
             subdir: Optional subdirectory within outputs
         """
-        if subdir:
+        # Write .md files to base_dir (same directory as spec.md)
+        if filename.endswith('.md'):
+            filepath = self.base_dir / filename
+        elif subdir:
             output_path = self.outputs_dir / subdir
             output_path.mkdir(parents=True, exist_ok=True)
             filepath = output_path / filename
         else:
+            self.outputs_dir.mkdir(parents=True, exist_ok=True)
             filepath = self.outputs_dir / filename
         
         filepath.write_text(content, encoding='utf-8')
@@ -69,7 +76,10 @@ class ContextManager:
     
     def file_exists(self, filename: str, subdir: Optional[str] = None) -> bool:
         """Check if a file exists."""
-        if subdir:
+        # .md files are in base_dir
+        if filename.endswith('.md') and not subdir:
+            filepath = self.base_dir / filename
+        elif subdir:
             filepath = self.outputs_dir / subdir / filename
         else:
             filepath = self.outputs_dir / filename
@@ -77,7 +87,10 @@ class ContextManager:
     
     def read_output(self, filename: str, subdir: Optional[str] = None) -> str:
         """Read a previously generated output file."""
-        if subdir:
+        # .md files are in base_dir
+        if filename.endswith('.md') and not subdir:
+            filepath = self.base_dir / filename
+        elif subdir:
             filepath = self.outputs_dir / subdir / filename
         else:
             filepath = self.outputs_dir / filename
@@ -133,7 +146,7 @@ class SpecOrchestrator:
     """
     Orchestrates the spec-driven development workflow.
     
-    Executes phases: constitution → spec → plan → tasks → implement
+    Executes phases: constitution -> spec -> plan -> tasks -> implement
     Each phase reads outputs from previous phases.
     """
     
@@ -208,16 +221,16 @@ class SpecOrchestrator:
         """
         try:
             self.constitution = self.context_manager.read_file("constitution.md")
-            print(f"✓ Loaded constitution ({len(self.constitution)} chars)")
+            print(f"[OK] Loaded constitution ({len(self.constitution)} chars)")
         except FileNotFoundError as e:
-            print(f"✗ {e}")
+            print(f"[FAIL] {e}")
             raise
         
         try:
             self.spec = self.context_manager.read_file("spec.md")
-            print(f"✓ Loaded specification ({len(self.spec)} chars)")
+            print(f"[OK] Loaded specification ({len(self.spec)} chars)")
         except FileNotFoundError as e:
-            print(f"✗ {e}")
+            print(f"[FAIL] {e}")
             raise
         
         return {
@@ -252,16 +265,16 @@ class SpecOrchestrator:
         prompt = get_plan_prompt(self.constitution, self.spec, tech_stack)
         
         # Generate plan
-        print("\n⏳ Generating plan (this may take a moment)...")
+        print("\n[...] Generating plan (this may take a moment)...")
         plan_response = await self.code_generator.generate(prompt)
         
         self.plan = plan_response
         
         if save:
             filepath = self.context_manager.write_file("plan.md", self.plan)
-            print(f"✓ Plan saved to: {filepath}")
+            print(f"[OK] Plan saved to: {filepath}")
         
-        print(f"✓ Plan generated ({len(self.plan)} chars)")
+        print(f"[OK] Plan generated ({len(self.plan)} chars)")
         
         return self.plan
     
@@ -288,14 +301,14 @@ class SpecOrchestrator:
         
         prompt = get_research_prompt(tech_stack, self.spec)
         
-        print("\n⏳ Researching technologies...")
+        print("\n[...] Researching technologies...")
         research_response = await self.code_generator.generate(prompt)
         
         self.research = research_response
         
         if save:
             filepath = self.context_manager.write_file("research.md", self.research)
-            print(f"✓ Research saved to: {filepath}")
+            print(f"[OK] Research saved to: {filepath}")
         
         return self.research
     
@@ -321,14 +334,14 @@ class SpecOrchestrator:
         
         prompt = get_data_model_prompt(self.spec, self.plan)
         
-        print("\n⏳ Generating data model...")
+        print("\n[...] Generating data model...")
         data_model_response = await self.code_generator.generate(prompt)
         
         self.data_model = data_model_response
         
         if save:
             filepath = self.context_manager.write_file("data-model.md", self.data_model)
-            print(f"✓ Data model saved to: {filepath}")
+            print(f"[OK] Data model saved to: {filepath}")
         
         return self.data_model
     
@@ -356,18 +369,18 @@ class SpecOrchestrator:
         prompt = get_tasks_prompt(self.constitution, self.spec, self.plan)
         
         # Generate tasks
-        print("\n⏳ Breaking down plan into tasks...")
+        print("\n[...] Breaking down plan into tasks...")
         tasks_response = await self.code_generator.generate(prompt)
         
         self.tasks = tasks_response
         
         if save:
             filepath = self.context_manager.write_file("tasks.md", self.tasks)
-            print(f"✓ Tasks saved to: {filepath}")
+            print(f"[OK] Tasks saved to: {filepath}")
         
         # Extract task count
         task_count = self.tasks.count('- [ ] T')
-        print(f"✓ Generated {task_count} tasks")
+        print(f"[OK] Generated {task_count} tasks")
         
         return self.tasks
     
@@ -400,7 +413,7 @@ class SpecOrchestrator:
         )
         
         # Generate implementation
-        print("\n⏳ Implementing all tasks (this will take several minutes)...")
+        print("\n[...] Implementing all tasks (this will take several minutes)...")
         implementation_response = await self.code_generator.generate(prompt)
         
         # Save full implementation output
@@ -408,12 +421,12 @@ class SpecOrchestrator:
             "implementation.md",
             implementation_response
         )
-        print(f"✓ Full implementation saved to: {filepath}")
+        print(f"[OK] Full implementation saved to: {filepath}")
         
         # Extract and save individual code files
         generated_files = []
         if save_code:
-            print("\n📁 Extracting code files...")
+            print("\n Extracting code files...")
             code_blocks = self.context_manager.extract_code_blocks(implementation_response)
             
             for block in code_blocks:
@@ -428,9 +441,9 @@ class SpecOrchestrator:
                         subdir=str(file_path.parent) if file_path.parent != Path('.') else 'src'
                     )
                     generated_files.append(str(saved_path))
-                    print(f"  ✓ {block['filename']}")
+                    print(f"  [OK] {block['filename']}")
         
-        print(f"\n✓ Implementation complete!")
+        print(f"\n[OK] Implementation complete!")
         print(f"  Generated {len(generated_files)} code files")
         
         return {
@@ -468,7 +481,7 @@ class SpecOrchestrator:
         print(f"{'='*70}")
         
         # Load context
-        print("\n📚 Loading Context...")
+        print("\n Loading Context...")
         await self.load_context()
         
         results = {
@@ -503,15 +516,16 @@ class SpecOrchestrator:
         print("WORKFLOW COMPLETE!")
         print(f"{'='*70}")
         print("Generated artifacts:")
-        print(f"  ✓ plan.md")
-        print(f"  ✓ tasks.md")
-        print(f"  ✓ implementation.md")
+        print(f"  [OK] plan.md")
+        print(f"  [OK] tasks.md")
+        print(f"  [OK] implementation.md")
         if include_research:
-            print(f"  ✓ research.md")
+            print(f"  [OK] research.md")
         if include_data_model:
-            print(f"  ✓ data-model.md")
-        print(f"  ✓ {results['file_count']} code files")
-        print(f"\nOutput directory: {self.context_manager.outputs_dir}")
+            print(f"  [OK] data-model.md")
+        print(f"  [OK] {results['file_count']} code files")
+        print(f"\nMarkdown files location: {self.base_dir}")
+        print(f"Code files location: {self.context_manager.outputs_dir}")
         print(f"{'='*70}\n")
         
         return results
@@ -558,7 +572,7 @@ class SpecOrchestrator:
         print(f"Tech Stack: {tech_stack}")
         print(f"Timestamp: {datetime.now().isoformat()}")
         print(f"{'='*70}")
-        print("\n⚠️  This workflow includes a HUMAN APPROVAL GATE after task generation.")
+        print("\n[WARN]  This workflow includes a HUMAN APPROVAL GATE after task generation.")
         print("    You will be prompted to review and approve tasks before implementation.")
         print(f"{'='*70}\n")
         
@@ -591,11 +605,10 @@ class SpecOrchestrator:
         validations['constitution_exists'] = self.base_dir.joinpath('constitution.md').exists()
         validations['spec_exists'] = self.base_dir.joinpath('spec.md').exists()
         
-        # Check generated files
-        outputs_dir = self.context_manager.outputs_dir
-        validations['plan_generated'] = outputs_dir.joinpath('plan.md').exists()
-        validations['tasks_generated'] = outputs_dir.joinpath('tasks.md').exists()
-        validations['implementation_generated'] = outputs_dir.joinpath('implementation.md').exists()
+        # Check generated files (.md files are now in base_dir, not outputs_dir)
+        validations['plan_generated'] = self.base_dir.joinpath('plan.md').exists()
+        validations['tasks_generated'] = self.base_dir.joinpath('tasks.md').exists()
+        validations['implementation_generated'] = self.base_dir.joinpath('implementation.md').exists()
         
         # Check if tasks follow proper format
         if validations['tasks_generated']:

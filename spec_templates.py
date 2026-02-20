@@ -129,8 +129,32 @@ Identify:
 
 ## Output Format
 
-Provide the complete plan in Markdown format with all sections filled.
+YOU MUST provide the COMPLETE, DETAILED plan in Markdown format with ALL sections filled out.
+
+DO NOT respond with:
+- A summary saying "I'll create the plan" or "Plan written to file"
+- A description of what you would write
+- A brief overview with no details
+
+INSTEAD, respond with the ACTUAL, COMPLETE PLAN CONTENT following the structure above.
+
+Example start of your response:
+```markdown
+# Implementation Plan
+
+## 1. Summary
+
+[Actual 2-3 sentence summary here...]
+
+## 2. Technical Context
+
+**Stack**: Python 3.10+, FastAPI, PostgreSQL...
+[etc.]
+```
+
 Mark any uncertainties as [NEEDS CLARIFICATION] but try to make reasonable assumptions based on context.
+
+BEGIN YOUR RESPONSE WITH THE PLAN CONTENT NOW:
 """
 
 # Tasks Generation Template (mirrors .specify/templates/commands/tasks.md)
@@ -251,13 +275,23 @@ Provide at end:
 
 ## Output Format
 
-Provide the complete tasks.md in Markdown format.
+YOU MUST provide the COMPLETE, DETAILED tasks breakdown with ALL tasks listed.
+
+DO NOT respond with:
+- A summary saying "I'll create the tasks" or "Tasks written to file"
+- A description of what you would write
+- Just the count of tasks
+
+INSTEAD, respond with the ACTUAL, COMPLETE TASK LIST following the structure above.
+
 Ensure ALL tasks have:
 1. Checkbox `- [ ]`
 2. Task ID
 3. Exact file paths
 4. Story labels for user story tasks
 5. [P] marker where applicable
+
+BEGIN YOUR RESPONSE WITH THE TASKS CONTENT NOW:
 """
 
 # Implementation Template (mirrors .specify/templates/commands/implement.md)
@@ -316,6 +350,15 @@ Execute ALL tasks from the task list following these rules:
 
 ### Output Format
 
+YOU MUST provide the COMPLETE, WORKING IMPLEMENTATION for ALL tasks.
+
+DO NOT respond with:
+- A summary saying "Implementation written" or "Code generated"
+- Placeholders or TODOs
+- Just file names without content
+
+INSTEAD, respond with the ACTUAL, COMPLETE CODE for each task.
+
 For each task, provide:
 
 #### Task [TaskID]: [Description]
@@ -334,6 +377,8 @@ For each task, provide:
 ```
 
 ---
+
+BEGIN YOUR RESPONSE WITH THE IMPLEMENTATION CONTENT NOW:
 
 Continue until ALL tasks are implemented.
 
@@ -407,8 +452,14 @@ How components will work together:
 
 ## Output Format
 
-Provide research.md in Markdown with all sections filled.
+YOU MUST provide the COMPLETE research document with ALL sections filled out.
+
+DO NOT respond with a summary or meta-response.
+INSTEAD, provide the ACTUAL, DETAILED research.md content.
+
 Focus on actionable information that will guide implementation.
+
+BEGIN YOUR RESPONSE WITH THE RESEARCH CONTENT NOW:
 """
 
 # Data Model Template

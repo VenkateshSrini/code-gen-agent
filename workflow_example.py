@@ -24,7 +24,16 @@ Examples:
 
 import asyncio
 import sys
+import os
 from pathlib import Path
+
+# Fix Windows console encoding issues
+if sys.platform == 'win32':
+    try:
+        sys.stdout.reconfigure(encoding='utf-8')
+        sys.stderr.reconfigure(encoding='utf-8')
+    except:
+        pass
 
 from spec_orchestrator import SpecOrchestrator
 
@@ -34,7 +43,7 @@ async def main():
     # Parse command line arguments
     base_dir = sys.argv[1] if len(sys.argv) > 1 else "./co-pilot"
     agent_type = sys.argv[2] if len(sys.argv) > 2 else None  # Auto-detect
-    tech_stack = sys.argv[3] if len(sys.argv) > 3 else "Python 3.10+"
+    tech_stack = sys.argv[3] if len(sys.argv) > 3 else "Python 3.14"
     
     print("="*70)
     print("SPEC-DRIVEN DEVELOPMENT WITH HUMAN APPROVAL")
@@ -47,7 +56,7 @@ async def main():
     # Verify base directory exists
     base_path = Path(base_dir)
     if not base_path.exists():
-        print(f"\n❌ Error: Base directory not found: {base_dir}")
+        print(f"\n[ERROR] Error: Base directory not found: {base_dir}")
         print("Please create the directory and add:")
         print("  - constitution.md (coding standards and principles)")
         print("  - spec.md (feature specification)")
@@ -58,15 +67,15 @@ async def main():
     spec_file = base_path / "spec.md"
     
     if not constitution_file.exists():
-        print(f"\n❌ Error: constitution.md not found in {base_dir}")
+        print(f"\n[ERROR] constitution.md not found in {base_dir}")
         return 1
     
     if not spec_file.exists():
-        print(f"\n❌ Error: spec.md not found in {base_dir}")
+        print(f"\n[ERROR] spec.md not found in {base_dir}")
         return 1
     
-    print(f"\n✓ Found constitution.md")
-    print(f"✓ Found spec.md")
+    print(f"\n[OK] Found constitution.md")
+    print(f"[OK] Found spec.md")
     
     # Create orchestrator (auto-detect agent type from directory name)
     orchestrator = SpecOrchestrator(base_dir=base_dir, agent_type=agent_type)
@@ -74,7 +83,7 @@ async def main():
     try:
         # Use async context manager to handle agent lifecycle
         async with orchestrator:
-            print(f"\n✓ Using agent: {orchestrator.agent_type}")
+            print(f"\n[OK] Using agent: {orchestrator.agent_type}")
             
             # Run workflow with human approval gate
             print("\n" + "="*70)
@@ -85,7 +94,11 @@ async def main():
             print("\nPress Ctrl+C at any time to cancel.")
             print("="*70)
             
-            input("\nPress Enter to start...")
+            # Skip input prompt if stdin is not available (e.g., when run from automation)
+            try:
+                input("\nPress Enter to start...")
+            except (EOFError, OSError):
+                print("\n(Non-interactive mode detected, starting immediately...)")
             
             # Execute the workflow
             result = await orchestrator.run_workflow_with_approval(
@@ -96,16 +109,17 @@ async def main():
             print("\n" + "="*70)
             print("SUCCESS!")
             print("="*70)
-            print(f"\n✓ Generated {result['file_count']} code files")
-            print(f"\nOutput directory: {base_path / 'outputs'}")
+            print(f"\n[OK] Generated {result['file_count']} code files")
+            print(f"\nMarkdown files: {base_path}")
+            print(f"Code files: {base_path / 'outputs'}")
             print("\nGenerated files:")
             for file_path in result['generated_files']:
                 print(f"  - {file_path}")
             
             print("\nGenerated artifacts:")
-            print("  - outputs/plan.md (implementation plan)")
-            print("  - outputs/tasks.md (task breakdown)")
-            print("  - outputs/implementation.md (full implementation)")
+            print("  - plan.md (implementation plan)")
+            print("  - tasks.md (task breakdown)")
+            print("  - implementation.md (full implementation)")
             print("  - outputs/src/ (extracted code files)")
             
             print("\n" + "="*70)
@@ -115,15 +129,15 @@ async def main():
             return 0
     
     except KeyboardInterrupt:
-        print("\n\n⚠️  Workflow cancelled by user")
+        print("\n\n[WARN] Workflow cancelled by user")
         return 130  # Standard exit code for Ctrl+C
     
     except FileNotFoundError as e:
-        print(f"\n❌ Error: {e}")
+        print(f"\n[ERROR] {e}")
         return 1
     
     except Exception as e:
-        print(f"\n❌ Unexpected error: {e}")
+        print(f"\n[ERROR] Unexpected error: {e}")
         import traceback
         traceback.print_exc()
         return 1

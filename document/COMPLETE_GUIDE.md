@@ -235,6 +235,9 @@ asyncio.run(main())
 ```bash
 python workflow_example.py ./document/co-pilot github_copilot "Python 3.10+"
 ```
+```bash
+python workflow_example.py ./anthropic claude  "Python 3.14"
+```
 
 The workflow will pause for your approval after generating tasks.
 
