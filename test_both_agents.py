@@ -20,7 +20,7 @@ async def test_agent(agent_type: str, output_file: Path):
     print(f"✓ Loaded spec ({len(spec)} chars)")
     
     # Generate prompt
-    prompt = get_plan_prompt(constitution, spec, "Python 3.10+")
+    prompt = get_plan_prompt(constitution, spec, "Python 3.14")
     print(f"✓ Generated prompt ({len(prompt)} chars)\n")
     
     print("Generating plan...")
@@ -72,12 +72,12 @@ async def main():
     
     results = []
     
-    # Test Claude
-    claude_result = await test_agent("claude", Path("co-pilot/plan_claude.md"))
-    results.append(claude_result)
+    # # Test Claude
+    # claude_result = await test_agent("claude", Path("co-pilot/plan_claude.md"))
+    # results.append(claude_result)
     
-    # Give a moment between tests
-    await asyncio.sleep(2)
+    # # Give a moment between tests
+    # await asyncio.sleep(2)
     
     # Test GitHub Copilot
     copilot_result = await test_agent("github_copilot", Path("co-pilot/plan_copilot.md"))

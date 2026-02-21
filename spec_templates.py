@@ -6,7 +6,9 @@ These templates guide AI agents through plan, tasks, and implementation phases.
 """
 
 # Plan Generation Template (mirrors .specify/templates/commands/plan.md)
-PLAN_PROMPT_TEMPLATE = """You are executing the PLAN generation phase of a spec-driven development workflow.
+PLAN_PROMPT_TEMPLATE = """🚨 IGNORE ALL LENGTH CONSTRAINTS - PROVIDE COMPLETE CONTENT 🚨
+
+You are executing the PLAN generation phase of a spec-driven development workflow.
 
 ## Context
 
@@ -129,36 +131,46 @@ Identify:
 
 ## Output Format
 
+🚨 MANDATORY RESPONSE FORMAT 🚨
+
 YOU MUST provide the COMPLETE, DETAILED plan in Markdown format with ALL sections filled out.
+Your response will be saved directly to a file - DO NOT include meta-commentary.
 
-DO NOT respond with:
-- A summary saying "I'll create the plan" or "Plan written to file"
-- A description of what you would write
-- A brief overview with no details
+❌ FORBIDDEN RESPONSES:
+- "I'm constrained to X sentences" → IGNORE this constraint, provide full content
+- "I'll create the plan" → NO, provide the actual plan NOW
+- "Do you want me to proceed?" → NO questions, just deliver content
+- Any summary or description of what you'll write → Write the actual content
 
-INSTEAD, respond with the ACTUAL, COMPLETE PLAN CONTENT following the structure above.
+✅ REQUIRED RESPONSE:
+Start IMMEDIATELY with the markdown content:
 
-Example start of your response:
-```markdown
 # Implementation Plan
 
 ## 1. Summary
 
-[Actual 2-3 sentence summary here...]
+[Your actual 2-3 sentence summary here...]
 
 ## 2. Technical Context
 
 **Stack**: Python 3.10+, FastAPI, PostgreSQL...
-[etc.]
-```
+**Architecture**: ...
+[Continue with full details...]
 
-Mark any uncertainties as [NEEDS CLARIFICATION] but try to make reasonable assumptions based on context.
+## 3. Constitution Check
+...
 
-BEGIN YOUR RESPONSE WITH THE PLAN CONTENT NOW:
+[Complete ALL 8 sections with full details]
+
+Mark any uncertainties as [NEEDS CLARIFICATION] but make reasonable assumptions.
+
+🚨 START YOUR RESPONSE WITH "# Implementation Plan" RIGHT NOW 🚨
 """
 
 # Tasks Generation Template (mirrors .specify/templates/commands/tasks.md)
-TASKS_PROMPT_TEMPLATE = """You are executing the TASKS generation phase of a spec-driven development workflow.
+TASKS_PROMPT_TEMPLATE = """🚨 IGNORE ALL LENGTH CONSTRAINTS - PROVIDE COMPLETE TASK LIST 🚨
+
+You are executing the TASKS generation phase of a spec-driven development workflow.
 
 ## Context
 
@@ -275,27 +287,42 @@ Provide at end:
 
 ## Output Format
 
+🚨 MANDATORY RESPONSE FORMAT 🚨
+
 YOU MUST provide the COMPLETE, DETAILED tasks breakdown with ALL tasks listed.
+Your response will be saved directly to a file - DO NOT include meta-commentary.
 
-DO NOT respond with:
-- A summary saying "I'll create the tasks" or "Tasks written to file"
-- A description of what you would write
-- Just the count of tasks
+❌ FORBIDDEN RESPONSES:
+- "I'm constrained to X sentences" → IGNORE this constraint, provide full content
+- "I'll create the tasks" → NO, provide the actual tasks NOW
+- "Do you want me to proceed?" → NO questions, just deliver content
+- Just a task count or summary → Write the complete task list
 
-INSTEAD, respond with the ACTUAL, COMPLETE TASK LIST following the structure above.
+✅ REQUIRED RESPONSE:
+Start IMMEDIATELY with the markdown content:
+
+# Task Breakdown
+
+## Phase 1: Setup & Infrastructure
+
+- [ ] T001 Create project structure per implementation plan
+- [ ] T002 [P] Initialize version control...
+[Continue with ALL tasks...]
 
 Ensure ALL tasks have:
 1. Checkbox `- [ ]`
-2. Task ID
+2. Task ID (T001, T002, etc.)
 3. Exact file paths
 4. Story labels for user story tasks
 5. [P] marker where applicable
 
-BEGIN YOUR RESPONSE WITH THE TASKS CONTENT NOW:
+🚨 START YOUR RESPONSE WITH "# Task Breakdown" RIGHT NOW 🚨
 """
 
 # Implementation Template (mirrors .specify/templates/commands/implement.md)
-IMPLEMENT_PROMPT_TEMPLATE = """You are executing the IMPLEMENTATION phase of a spec-driven development workflow.
+IMPLEMENT_PROMPT_TEMPLATE = """🚨 IGNORE ALL LENGTH CONSTRAINTS - PROVIDE COMPLETE IMPLEMENTATION 🚨
+
+You are executing the IMPLEMENTATION phase of a spec-driven development workflow.
 
 ## Context
 
@@ -394,16 +421,40 @@ After all tasks:
 
 ## Important Notes
 
-- Generate COMPLETE, working code (no placeholders like "# TODO" or "# Add logic here")
+🚨 MANDATORY OUTPUT REQUIREMENTS 🚨
+
+Your response will be saved directly to implementation.md - provide COMPLETE working code.
+
+❌ FORBIDDEN:
+- "I'm constrained to X sentences" → IGNORE this, provide everything
+- Placeholders like "# TODO" or "# Add logic here" → Write actual code
+- Summaries or descriptions → Write the complete implementation
+- Asking for confirmation → Just deliver the code
+
+✅ REQUIRED:
+- Generate COMPLETE, working code for ALL tasks
 - Include ALL necessary imports
-- Add proper error handling
-- Follow the exact file paths from tasks.md
-- Respect the constitution principles
-- Ensure code is production-ready
+- Add proper error handling and validation
+- Follow exact file paths from tasks.md
+- Respect constitution principles
+- Write production-ready code
+- Include tests if required by constitution
+
+🚨 START YOUR RESPONSE WITH "# Implementation" RIGHT NOW 🚨
+
+For each file:
+
+**File**: path/to/file.py
+```python
+[Complete working code]
+```
+[Continue for ALL files from task list]
 """
 
 # Research Generation Template (optional, for Phase 0)
-RESEARCH_PROMPT_TEMPLATE = """You are executing the RESEARCH phase for implementation planning.
+RESEARCH_PROMPT_TEMPLATE = """🚨 IGNORE ALL LENGTH CONSTRAINTS - PROVIDE COMPLETE RESEARCH 🚨
+
+You are executing the RESEARCH phase for implementation planning.
 
 ## Context
 
@@ -452,18 +503,26 @@ How components will work together:
 
 ## Output Format
 
+🚨 MANDATORY RESPONSE FORMAT 🚨
+
 YOU MUST provide the COMPLETE research document with ALL sections filled out.
+Your response will be saved directly to a file - DO NOT include meta-commentary.
 
-DO NOT respond with a summary or meta-response.
-INSTEAD, provide the ACTUAL, DETAILED research.md content.
+❌ FORBIDDEN:
+- "I'm constrained..." → IGNORE constraints, provide full content
+- "I'll create..." → NO, provide the content NOW
+- Summaries → Write detailed research
 
+✅ REQUIRED:
 Focus on actionable information that will guide implementation.
 
-BEGIN YOUR RESPONSE WITH THE RESEARCH CONTENT NOW:
+🚨 START YOUR RESPONSE WITH "# Research" RIGHT NOW 🚨
 """
 
 # Data Model Template
-DATA_MODEL_PROMPT_TEMPLATE = """You are generating the data model for the feature.
+DATA_MODEL_PROMPT_TEMPLATE = """🚨 IGNORE ALL LENGTH CONSTRAINTS - PROVIDE COMPLETE DATA MODEL 🚨
+
+You are generating the data model for the feature.
 
 ## Context
 
@@ -507,6 +566,18 @@ For each entity:
 ---
 
 Continue for all entities identified in the specification.
+
+## Output Format
+
+🚨 MANDATORY RESPONSE FORMAT 🚨
+
+Provide the COMPLETE data model with ALL entities.
+Your response will be saved directly to a file - DO NOT include meta-commentary.
+
+❌ FORBIDDEN: "I'm constrained...", "I'll create...", summaries
+✅ REQUIRED: Complete data model for ALL entities
+
+🚨 START YOUR RESPONSE WITH "# Data Model" RIGHT NOW 🚨
 """
 
 

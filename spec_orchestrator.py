@@ -577,11 +577,23 @@ class SpecOrchestrator:
         print(f"{'='*70}\n")
         
         # Run the Microsoft Agent Framework workflow
-        result: ImplementationData = await run_spec_workflow(
+        result: Optional[ImplementationData] = await run_spec_workflow(
             base_dir=str(self.base_dir),
             agent_type=self.agent_type,
             tech_stack=tech_stack
         )
+        
+        # Handle cancelled workflow
+        if result is None:
+            print("\n[INFO] Workflow was cancelled by user during approval gate.")
+            return {
+                'implementation': '',
+                'generated_files': [],
+                'file_count': 0,
+                'agent_type': self.agent_type,
+                'tech_stack': tech_stack,
+                'cancelled': True
+            }
         
         # Convert ImplementationData to dict for compatibility
         return {
@@ -589,7 +601,8 @@ class SpecOrchestrator:
             'generated_files': result.generated_files,
             'file_count': result.file_count,
             'agent_type': self.agent_type,
-            'tech_stack': tech_stack
+            'tech_stack': tech_stack,
+            'cancelled': False
         }
     
     async def validate_workflow(self) -> Dict[str, bool]:

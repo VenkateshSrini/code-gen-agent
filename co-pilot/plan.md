@@ -2,259 +2,227 @@
 
 ## 1. Summary
 
-This plan delivers a FastAPI-based Task Management API with JWT authentication, task CRUD, categories, filtering, and observability backed by PostgreSQL and Redis. The stack targets Python 3.14 with SQLAlchemy 2.0, PyJWT, bcrypt, and pytest to meet the security, performance, and test-first requirements.
+Build a FastAPI-based Task Management API with JWT authentication, task CRUD, category management, and filtering backed by PostgreSQL and SQLAlchemy. The implementation will follow the layered service architecture (routes → services → repositories → models) with Redis-backed caching and rate limiting, and will be containerized for Docker/Kubernetes deployment while meeting the project's security, performance, and observability standards.
 
 ## 2. Technical Context
 
-**Stack**: Python 3.14, FastAPI, SQLAlchemy 2.0, Pydantic, PyJWT, bcrypt, pytest, pytest-asyncio, Redis client  
-**Architecture**: Monolithic FastAPI, layered services (API routes → services → repositories → models), dependency injection  
-**Database**: PostgreSQL 15+, Redis 7+ for caching and rate limiting  
-**Constraints**: p95 < 200ms, 1000 concurrent users, coverage >= 80%, rate limits 100 req/min per user, 20 req/min per IP  
-**Deployment**: Docker/Docker Compose for local, Kubernetes for production, health checks
+**Stack**: Python 3.14, FastAPI, SQLAlchemy 2.0, PostgreSQL 15+, PyJWT, bcrypt, Redis, pytest/pytest-asyncio  
+**Architecture**: Monolithic FastAPI application with layered services architecture (API Routes → Services → Repositories → Models) and dependency injection  
+**Database**: PostgreSQL 15+ with SQLAlchemy ORM; Redis for caching and rate limiting  
+**Constraints**: p95 response time < 200ms, 1000 concurrent users, >80% test coverage, input validation and security controls by default  
+**Deployment**: Dockerized app with Docker Compose (app + PostgreSQL + Redis) and Kubernetes-ready configuration (health checks, environment-based config)
 
 ## 3. Constitution Check
 
-- [ ] Test-First Development: tests written before implementation, initial failures, coverage >= 80%
-- [ ] Clean Code & Documentation: clear naming, docstrings, type hints, review readiness
-- [ ] API-First Design: OpenAPI contracts defined and versioned before implementation
-- [ ] Security by Default: validation, auth, secrets in env, rate limiting
-- [ ] Performance Consciousness: indexed queries, caching, async I/O, p95 < 200ms
-- [ ] Observability: structured logs, correlation IDs, metrics, tracing, health checks
-- [ ] Error Handling: meaningful error messages, contextual logging, no stack traces to users
-- [ ] Code Organization: layered services, DI, separation of concerns
+- [ ] Test-First Development: Write tests before implementation, ensure initial failures, and reach >80% coverage.
+- [ ] Clean Code & Documentation: Use clear naming, full docstrings, and type hints throughout.
+- [ ] API-First Design: Define request/response schemas and versioned endpoints before implementation.
+- [ ] Security by Default: Validate input, enforce auth, handle secrets via env vars, and avoid unsafe output.
+- [ ] Performance Consciousness: Optimize queries, index filters, and use caching for hot reads.
+- [ ] Observability: Provide structured logging, correlation IDs, metrics, and health checks.
+- [ ] Error Handling: Meaningful errors, proper exception use, and user-friendly messages.
+- [ ] Code Organization: Maintain DDD layers, DI for services, and focused methods.
 
 ## 4. Project Structure
 
 ```
-project-root/
-├── constitution.md
-├── spec.md
-├── plan.md
-├── tasks.md
-├── implementation.md
-└── outputs/
-    ├── src/
-    │   ├── main.py
-    │   ├── api/
-    │   │   └── v1/
-    │   │       ├── auth.py
-    │   │       ├── tasks.py
-    │   │       ├── categories.py
-    │   │       └── health.py
-    │   ├── core/
-    │   │   ├── config.py
-    │   │   ├── security.py
-    │   │   ├── logging.py
-    │   │   ├── rate_limit.py
-    │   │   └── tracing.py
-    │   ├── db/
-    │   │   ├── base.py
-    │   │   ├── session.py
-    │   │   └── migrations/
-    │   ├── models/
-    │   │   ├── user.py
-    │   │   ├── task.py
-    │   │   ├── category.py
-    │   │   ├── task_category.py
-    │   │   ├── refresh_token.py
-    │   │   └── email_verification.py
-    │   ├── repositories/
-    │   │   ├── user_repo.py
-    │   │   ├── task_repo.py
-    │   │   ├── category_repo.py
-    │   │   ├── token_repo.py
-    │   │   └── email_verification_repo.py
-    │   ├── schemas/
-    │   │   ├── auth.py
-    │   │   ├── task.py
-    │   │   ├── category.py
-    │   │   ├── pagination.py
-    │   │   └── errors.py
-    │   ├── services/
-    │   │   ├── auth_service.py
-    │   │   ├── task_service.py
-    │   │   ├── category_service.py
-    │   │   ├── token_service.py
-    │   │   ├── email_service.py
-    │   │   └── cache_service.py
-    │   └── utils/
-    │       ├── validators.py
-    │       ├── datetime.py
-    │       └── pagination.py
-    └── tests/
-        ├── unit/
-        ├── integration/
-        └── contract/
+src/
+├── main.py
+├── api/
+│   ├── v1/
+│   │   ├── auth.py
+│   │   ├── tasks.py
+│   │   └── categories.py
+│   └── dependencies.py
+├── models/
+│   ├── user.py
+│   ├── task.py
+│   ├── category.py
+│   └── task_category.py
+├── schemas/
+│   ├── auth.py
+│   ├── task.py
+│   └── category.py
+├── services/
+│   ├── auth_service.py
+│   ├── task_service.py
+│   ├── category_service.py
+│   └── email_service.py
+├── repositories/
+│   ├── user_repo.py
+│   ├── task_repo.py
+│   └── category_repo.py
+├── core/
+│   ├── config.py
+│   ├── security.py
+│   ├── logging.py
+│   └── rate_limiter.py
+├── db/
+│   ├── session.py
+│   └── migrations/
+└── utils/
+    ├── pagination.py
+    ├── validators.py
+    └── time.py
+
+tests/
+├── unit/
+│   ├── test_auth_service.py
+│   ├── test_task_service.py
+│   └── test_category_service.py
+├── integration/
+│   ├── test_auth_routes.py
+│   ├── test_task_routes.py
+│   └── test_category_routes.py
+└── contract/
+    └── test_openapi_contracts.py
 ```
 
 ## 5. Data Model
 
-- User
-  - Fields: id UUID, email str, password_hash str, full_name str, is_active bool, failed_login_count int, locked_until datetime?, created_at datetime, updated_at datetime
-  - Relationships: has many tasks, categories, refresh_tokens, email_verification_tokens
-  - Validation: email unique + regex, password complexity at API boundary, full_name required
-- Task
-  - Fields: id UUID, user_id UUID, title str(3-200), description str?(<=2000), status enum, priority enum, due_date datetime?, created_at datetime, updated_at datetime, deleted_at datetime?, version int
-  - Relationships: belongs to user, many-to-many categories via task_categories
-  - Validation: due_date future, status and priority enums
-- Category
-  - Fields: id UUID, user_id UUID, name str(3-50), color str?(hex), created_at datetime
-  - Relationships: belongs to user, many-to-many tasks via task_categories
-  - Validation: unique (user_id, name), color hex
-- TaskCategory
-  - Fields: task_id UUID, category_id UUID
-  - Relationships: join table, composite PK
-- RefreshToken
-  - Fields: id UUID, user_id UUID, token_hash str, expires_at datetime, created_at datetime, revoked_at datetime?, rotated_from UUID?
-  - Relationships: belongs to user
-- EmailVerificationToken
-  - Fields: id UUID, user_id UUID, token_hash str, expires_at datetime, created_at datetime, used_at datetime?
-  - Relationships: belongs to user
+### User
+- **Fields**: id (UUID), email (str), password_hash (str), full_name (str), is_active (bool), created_at (datetime), updated_at (datetime)
+- **Relationships**: User 1→N Tasks; User 1→N Categories
+- **Validation**: Email format/uniqueness; password complexity; full_name required
+
+### Task
+- **Fields**: id (UUID), user_id (UUID), title (str), description (str | null), status (enum), priority (enum), due_date (datetime | null), created_at (datetime), updated_at (datetime), deleted_at (datetime | null), version (int)
+- **Relationships**: Task N→1 User; Task N↔N Category (via task_categories)
+- **Validation**: title length 3–200; description <= 2000; due_date in future; status/priority enums; optimistic locking on version
+
+### Category
+- **Fields**: id (UUID), user_id (UUID), name (str), color (str | null), created_at (datetime)
+- **Relationships**: Category N→1 User; Category N↔N Task (via task_categories)
+- **Validation**: name length 3–50; color hex if provided; unique (user_id, name)
+
+### TaskCategory
+- **Fields**: task_id (UUID), category_id (UUID)
+- **Relationships**: Many-to-many join between Task and Category
+- **Validation**: unique pair (task_id, category_id)
 
 ## 6. API Contracts
 
-### Shared Schemas
-- Task: { id, user_id, title, description?, status, priority, due_date?, created_at, updated_at, deleted_at?, version }
-- Category: { id, user_id, name, color?, created_at }
-- User: { id, email, full_name, is_active, created_at, updated_at }
-
 ### US-1.1 Register
-- Endpoint: POST /api/v1/auth/register
-- Auth: none
-- Request: { email, password, full_name }
-- Response: 201 { access_token, refresh_token, token_type, expires_in, user }
-- Status codes: 201, 400, 409
+**POST** `/api/v1/auth/register`
+- **Request**: `{ "email": "string", "password": "string", "full_name": "string" }`
+- **Response 201**: `{ "access_token": "string", "refresh_token": "string", "token_type": "bearer", "user": {"id": "uuid", "email": "string", "full_name": "string", "is_active": false} }`
+- **Errors**: 400 (validation), 409 (email exists)
+- **Auth**: None
 
 ### US-1.2 Login
-- Endpoint: POST /api/v1/auth/login
-- Auth: none
-- Request: { email, password }
-- Response: 200 { access_token, refresh_token, token_type, expires_in, user }
-- Status codes: 200, 401, 423, 429
+**POST** `/api/v1/auth/login`
+- **Request**: `{ "email": "string", "password": "string" }`
+- **Response 200**: `{ "access_token": "string", "refresh_token": "string", "token_type": "bearer", "expires_in": 3600 }`
+- **Errors**: 401 (invalid), 423 (locked out), 429 (rate limit)
+- **Auth**: None
 
-### Auth Refresh
-- Endpoint: POST /api/v1/auth/refresh
-- Auth: refresh token
-- Request: { refresh_token }
-- Response: 200 { access_token, refresh_token, token_type, expires_in }
-- Status codes: 200, 401, 403
+### Refresh Token
+**POST** `/api/v1/auth/refresh`
+- **Request**: `{ "refresh_token": "string" }`
+- **Response 200**: `{ "access_token": "string", "refresh_token": "string", "token_type": "bearer", "expires_in": 3600 }`
+- **Errors**: 401 (invalid/expired)
+- **Auth**: None
 
 ### US-2.1 Create Task
-- Endpoint: POST /api/v1/tasks
-- Auth: bearer JWT
-- Request: { title, description?, due_date?, priority? }
-- Response: 201 Task
-- Status codes: 201, 400, 401
+**POST** `/api/v1/tasks`
+- **Request**: `{ "title": "string", "description": "string?", "due_date": "datetime?", "priority": "low|medium|high" }`
+- **Response 201**: `{ "id": "uuid", "title": "string", "description": "string?", "due_date": "datetime?", "priority": "low|medium|high", "status": "pending", "created_at": "datetime", "updated_at": "datetime" }`
+- **Errors**: 400 (validation), 401 (unauth)
+- **Auth**: Bearer JWT
 
 ### US-2.2 List Tasks
-- Endpoint: GET /api/v1/tasks
-- Auth: bearer JWT
-- Request: query params page, limit, status?, priority?, due_from?, due_to?, sort?
-- Response: 200 { items: [Task], total, page, limit }
-- Status codes: 200, 401
-
-### Get Task
-- Endpoint: GET /api/v1/tasks/{task_id}
-- Auth: bearer JWT
-- Response: 200 Task
-- Status codes: 200, 401, 403, 404
+**GET** `/api/v1/tasks`
+- **Query**: `page`, `limit`, `status`, `priority`, `due_from`, `due_to`, `sort`
+- **Response 200**: `{ "items": [Task], "total": 0, "page": 1, "limit": 20 }`
+- **Errors**: 400 (invalid params), 401 (unauth)
+- **Auth**: Bearer JWT
 
 ### US-2.3 Update Task
-- Endpoint: PATCH /api/v1/tasks/{task_id}
-- Auth: bearer JWT
-- Request: { title?, description?, due_date?, priority?, status?, version }
-- Response: 200 Task
-- Status codes: 200, 400, 401, 403, 404, 409
+**PATCH** `/api/v1/tasks/{task_id}`
+- **Request**: partial Task fields (title/description/due_date/priority/status) + `version`
+- **Response 200**: updated Task
+- **Errors**: 400 (validation), 401 (unauth), 403 (forbidden), 404 (not found), 409 (version conflict)
+- **Auth**: Bearer JWT
 
 ### US-2.4 Delete Task
-- Endpoint: DELETE /api/v1/tasks/{task_id}
-- Auth: bearer JWT
-- Response: 204
-- Status codes: 204, 401, 403, 404
+**DELETE** `/api/v1/tasks/{task_id}`
+- **Response 204**: No Content
+- **Errors**: 401 (unauth), 403 (forbidden), 404 (not found)
+- **Auth**: Bearer JWT
 
 ### US-3.1 Create Category
-- Endpoint: POST /api/v1/categories
-- Auth: bearer JWT
-- Request: { name, color? }
-- Response: 201 Category
-- Status codes: 201, 400, 401, 409
+**POST** `/api/v1/categories`
+- **Request**: `{ "name": "string", "color": "#RRGGBB?" }`
+- **Response 201**: `{ "id": "uuid", "name": "string", "color": "#RRGGBB", "created_at": "datetime" }`
+- **Errors**: 400 (validation), 409 (duplicate)
+- **Auth**: Bearer JWT
 
 ### List Categories
-- Endpoint: GET /api/v1/categories
-- Auth: bearer JWT
-- Response: 200 { items: [Category] }
-- Status codes: 200, 401
+**GET** `/api/v1/categories`
+- **Response 200**: `{ "items": [Category], "total": 0 }`
+- **Errors**: 401 (unauth)
+- **Auth**: Bearer JWT
 
 ### Delete Category
-- Endpoint: DELETE /api/v1/categories/{cat_id}
-- Auth: bearer JWT
-- Response: 204
-- Status codes: 204, 401, 403, 404
+**DELETE** `/api/v1/categories/{cat_id}`
+- **Response 204**: No Content
+- **Errors**: 401 (unauth), 403 (forbidden), 404 (not found)
+- **Auth**: Bearer JWT
 
-### US-3.2 Assign Category to Task
-- Endpoint: POST /api/v1/tasks/{task_id}/categories/{cat_id}
-- Auth: bearer JWT
-- Response: 200 Task with categories
-- Status codes: 200, 401, 403, 404, 409
+### US-3.2 Assign Category
+**POST** `/api/v1/tasks/{task_id}/categories/{cat_id}`
+- **Response 200**: Task with categories
+- **Errors**: 400 (duplicate), 401 (unauth), 403 (forbidden), 404 (not found)
+- **Auth**: Bearer JWT
 
-### Remove Category from Task
-- Endpoint: DELETE /api/v1/tasks/{task_id}/categories/{cat_id}
-- Auth: bearer JWT
-- Response: 204
-- Status codes: 204, 401, 403, 404
+### Remove Category
+**DELETE** `/api/v1/tasks/{task_id}/categories/{cat_id}`
+- **Response 204**: No Content
+- **Errors**: 401 (unauth), 403 (forbidden), 404 (not found)
+- **Auth**: Bearer JWT
 
-### Health
-- Endpoint: GET /health
-- Auth: none
-- Response: 200 { status, version, time }
-- Status codes: 200
+### Health Check
+**GET** `/health`
+- **Response 200**: `{ "status": "ok" }`
+- **Auth**: None
 
 ## 7. Implementation Phases
 
 ### Phase 0: Research
-- FastAPI async patterns, dependency injection, request lifecycle
-- SQLAlchemy 2.0 async sessions, optimistic locking, soft delete patterns
-- PyJWT access and refresh token rotation with revocation storage
-- Redis sliding window rate limiting and cache-aside patterns
-- Email verification token flow and dev console backend
-- OpenTelemetry or similar logging, metrics, tracing integration
+- Validate FastAPI + SQLAlchemy 2.0 async patterns and session management.
+- Confirm PyJWT token rotation best practices and Redis-based rate limiting.
+- Review bcrypt and email verification token storage best practices.
 
 ### Phase 1: Foundation
-- Project scaffolding under outputs/src and outputs/tests
-- Environment config, secret management, settings validation
-- PostgreSQL setup, Alembic migrations, base models
-- Core middleware: request ID, structured logging, exception handlers
-- Security utilities: bcrypt hashing, JWT helpers, token persistence
-- Redis clients for cache and rate limiting
-- Health check endpoint and base dependency wiring
+- Initialize project structure, configuration, and dependency management.
+- Define SQLAlchemy models and Alembic migrations for all entities.
+- Implement DB session lifecycle and repository base classes.
+- Build security utilities (hashing, JWT creation/verification).
+- Set up logging (JSON), correlation IDs, and health check endpoint.
+- Implement Redis client and rate limiting middleware.
 
 ### Phase 2: Core Features
-- US-1.1 Registration: user creation in inactive state, verification token, email send, initial tokens
-- US-1.2 Login: credential validation, failed login tracking, lockout, rate limit checks, tokens
-- Auth refresh: token rotation, revoke prior refresh token, update last_used
-- US-2.1 Create Task: validation, user linkage, timestamps, defaults
-- US-2.2 List Tasks: filters, pagination, sorting, exclude deleted, total count
-- US-2.3 Update Task: PATCH validation, optimistic locking on version
-- US-2.4 Delete Task: soft delete, exclude in list and get
-- US-3.1 Create Category: unique per user, default color handling
-- US-3.2 Assign Category: ownership validation, junction insert, prevent duplicates
-- Supporting endpoints: get task, list categories, delete category, remove category
-- Dependencies: auth foundation before task endpoints, categories before assignment, tasks before assignment
+- **US-1.1 Registration**: user creation, email verification token, and initial auth responses.
+- **US-1.2 Login/Refresh**: credential validation, lockout tracking, refresh token rotation.
+- **US-2.1 Create Task**: validation, ownership association, timestamps.
+- **US-2.2 List Tasks**: filtering, pagination, sorting, and total counts.
+- **US-2.3 Update Task**: PATCH handling, optimistic locking, validation.
+- **US-2.4 Delete Task**: soft delete and exclusion from list queries.
+- **US-3.1 Category CRUD**: create/list/delete with per-user uniqueness.
+- **US-3.2 Assign/Remove Category**: junction table operations and validation.
 
 ### Phase 3: Testing & Polish
-- Unit tests for validators, services, repositories, security helpers
-- Integration tests for every endpoint and auth flow
-- Contract tests against OpenAPI schemas
-- Coverage gate >= 80%
-- Performance profiling, indexes on user_id, status, priority, due_date, created_at
-- Security verification for input validation, rate limiting, token rotation
-- Documentation polish for OpenAPI descriptions and local dev steps
+- Unit tests for services and validators; integration tests for all routes.
+- Contract tests for OpenAPI schemas and error responses.
+- Performance checks for list queries, indexing, and cache behavior.
+- Security review: auth enforcement, rate limit behavior, input validation.
+- Documentation review: OpenAPI tags, descriptions, and examples.
 
 ## 8. Risk Assessment
 
-- Python 3.14 ecosystem compatibility risk and CI matrix support [NEEDS CLARIFICATION]
-- Redis dependency for rate limiting and cache availability, fail-open vs fail-closed policy [NEEDS CLARIFICATION]
-- Token rotation and revocation logic complexity, requires thorough tests
-- Email delivery and verification timing issues, need retries and clear error handling
-- Optimistic locking conflict handling and client retry guidance
-- Filtering performance at scale, needs proper indexing and query plans
+- **JWT/Refresh Token Security**: Risk of token misuse; mitigate with rotation, short-lived access tokens, and revocation storage in DB/Redis.
+- **Rate Limiting Accuracy**: Sliding window correctness in Redis; mitigate with integration tests and time-based simulations.
+- **Optimistic Locking Conflicts**: Potential update errors; mitigate with clear 409 responses and client guidance.
+- **Email Verification Flow**: Deliverability in prod vs dev stub; mitigate with configurable SMTP and robust token expiration handling.
+- **Performance Under Load**: Filtered task queries and joins; mitigate with indexes, query profiling, and caching.
+- **Many-to-Many Integrity**: Duplicate or unauthorized category assignment; mitigate with DB constraints and ownership checks.

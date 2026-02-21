@@ -524,7 +524,7 @@ async def run_spec_workflow(
     base_dir: str,
     agent_type: str = "claude",
     tech_stack: str = "Python 3.10+"
-) -> ImplementationData:
+) -> Optional[ImplementationData]:
     """
     Run the complete spec-driven development workflow with human approval.
     
@@ -537,7 +537,7 @@ async def run_spec_workflow(
         tech_stack: Technology stack description
     
     Returns:
-        ImplementationData with generated files
+        ImplementationData with generated files, or None if workflow was cancelled
     
     Example:
         >>> result = await run_spec_workflow(
@@ -545,7 +545,8 @@ async def run_spec_workflow(
         ...     agent_type="github_copilot",
         ...     tech_stack="Python 3.10+ with FastAPI"
         ... )
-        >>> print(f"Generated {result.file_count} files")
+        >>> if result:
+        ...     print(f"Generated {result.file_count} files")
     """
     print(f"\n{'='*70}")
     print("SPEC-DRIVEN DEVELOPMENT WORKFLOW")
@@ -564,6 +565,7 @@ async def run_spec_workflow(
     
     # Initialize result variable to track workflow output
     result: Optional[ImplementationData] = None
+    cancelled = False
     
     # Start workflow with base_dir and tech_stack as input
     # The workflow will pause at the approval gate
@@ -573,35 +575,39 @@ async def run_spec_workflow(
     )
     
     # Process events and handle approval requests
-    pending_responses, result_data = await _process_event_stream(stream)
+    pending_responses, result_data, was_cancelled = await _process_event_stream(stream)
     if result_data:
         result = result_data
+    if was_cancelled:
+        cancelled = True
     
     # Continue workflow with approval responses
     while pending_responses is not None:
         stream = workflow.run(stream=True, responses=pending_responses)
-        pending_responses, result_data = await _process_event_stream(stream)
+        pending_responses, result_data, was_cancelled = await _process_event_stream(stream)
         if result_data:
             result = result_data
+        if was_cancelled:
+            cancelled = True
     
     # The workflow should have yielded the final ImplementationData
     # For now, we'll retrieve it from the last output event
     # In a real implementation, you'd collect outputs from events
     
     print(f"\n{'='*70}")
-    print("WORKFLOW COMPLETE!")
+    if cancelled:
+        print("WORKFLOW CANCELLED BY USER")
+    else:
+        print("WORKFLOW COMPLETE!")
     print(f"{'='*70}\n")
     
-    # Return the captured result or raise error if not found
-    if result is None:
-        raise RuntimeError("Workflow did not produce expected ImplementationData output")
-    
+    # Return the captured result (None if cancelled)
     return result
 
 
 async def _process_event_stream(
     stream: AsyncIterable[WorkflowEvent]
-) -> tuple[Optional[Dict[str, Any]], Optional[ImplementationData]]:
+) -> tuple[Optional[Dict[str, Any]], Optional[ImplementationData], bool]:
     """
     Process workflow events and collect human approval requests.
     
@@ -612,9 +618,11 @@ async def _process_event_stream(
         Tuple of:
         - Dict of request_id -> response (None if no pending requests)
         - ImplementationData if yielded by workflow (None otherwise)
+        - bool indicating if workflow was cancelled by user
     """
     requests: List[tuple[str, ApprovalRequest]] = []
     result_data: Optional[ImplementationData] = None
+    cancelled = False
     event_count = 0
     
     async for event in stream:
@@ -635,6 +643,9 @@ async def _process_event_stream(
         elif event.type == "output":
             if isinstance(event.data, str):
                 print(f"  [{event.executor_id}] {event.data}")
+                # Check if workflow was cancelled
+                if "cancelled" in event.data.lower():
+                    cancelled = True
             elif isinstance(event.data, ImplementationData):
                 result_data = event.data
 
@@ -657,13 +668,14 @@ async def _process_event_stream(
                     break
                 elif user_input in ['no', 'n']:
                     responses[request_id] = False
+                    cancelled = True
                     break
                 else:
                     print("Please enter 'yes' or 'no'")
         
-        return responses, result_data
+        return responses, result_data, cancelled
     
-    return None, result_data
+    return None, result_data, cancelled
 
 
 # Example usage
@@ -682,7 +694,10 @@ if __name__ == "__main__":
             tech_stack=tech_stack
         )
         
-        print(f"\n[OK] Generated {result.file_count} code files")
-        print(f"[OK] Output directory: {Path(base_dir) / 'outputs'}")
+        if result:
+            print(f"\n[OK] Generated {result.file_count} code files")
+            print(f"[OK] Output directory: {Path(base_dir) / 'outputs'}")
+        else:
+            print(f"\n[INFO] Workflow was cancelled. No files were generated.")
     
     asyncio.run(main())

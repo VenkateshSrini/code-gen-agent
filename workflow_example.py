@@ -105,6 +105,19 @@ async def main():
                 tech_stack=tech_stack
             )
             
+            # Check if workflow was cancelled
+            if result.get('cancelled', False):
+                print("\n" + "="*70)
+                print("WORKFLOW CANCELLED")
+                print("="*70)
+                print("\nThe workflow was cancelled during the approval gate.")
+                print("No implementation files were generated.")
+                print(f"\nGenerated artifacts (in {base_path}):")
+                print("  - plan.md (implementation plan)")
+                print("  - tasks.md (task breakdown)")
+                print("\n" + "="*70)
+                return 0
+            
             # Display results
             print("\n" + "="*70)
             print("SUCCESS!")
