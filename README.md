@@ -125,6 +125,7 @@ CLAUDE_MODEL=sonnet
 
 # GitHub Copilot Configuration
 GITHUB_COPILOT_MODEL=gpt-5.2-codex
+GITHUB_COPILOT_TIMEOUT=900
 ```
 
 ## 📚 Learn More

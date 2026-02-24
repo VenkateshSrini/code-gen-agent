@@ -334,6 +334,7 @@ gen = CodeGenerator(
 # In .env file
 AGENT_TYPE=github_copilot
 GITHUB_COPILOT_MODEL=o1
+GITHUB_COPILOT_TIMEOUT=900
 CLAUDE_MODEL=haiku
 ```
 

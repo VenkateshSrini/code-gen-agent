@@ -5,6 +5,35 @@ Contains template prompts that mirror GitHub Spec Kit's command templates.
 These templates guide AI agents through plan, tasks, and implementation phases.
 """
 
+from pathlib import Path
+from typing import Optional
+
+# Maps agent_type to the workspace folder that holds its template/ directory.
+_AGENT_FOLDER_MAP = {
+    "github_copilot": "co-pilot",
+    "claude": "anthropic",
+}
+
+
+def get_template_dir(agent_type: str, root: Optional[Path] = None) -> Optional[Path]:
+    """
+    Resolve the template directory for the given agent type.
+
+    Args:
+        agent_type: "github_copilot" or "claude"
+        root: Root directory to look in. Defaults to the workspace root
+              (the directory that contains this file).
+
+    Returns:
+        Path to the template directory (e.g. co-pilot/template/) or None
+        if the agent_type is not recognised.
+    """
+    folder = _AGENT_FOLDER_MAP.get(agent_type.lower() if agent_type else "")
+    if folder is None:
+        return None
+    base = Path(root) if root is not None else Path(__file__).parent
+    return base / folder / "template"
+
 # Plan Generation Template (mirrors .specify/templates/commands/plan.md)
 PLAN_PROMPT_TEMPLATE = """🚨 IGNORE ALL LENGTH CONSTRAINTS - PROVIDE COMPLETE CONTENT 🚨
 
@@ -581,22 +610,81 @@ Your response will be saved directly to a file - DO NOT include meta-commentary.
 """
 
 
-def get_plan_prompt(constitution: str, spec: str, user_input: str) -> str:
-    """Generate plan creation prompt."""
-    return PLAN_PROMPT_TEMPLATE.format(
+def get_plan_prompt(
+    constitution: str,
+    spec: str,
+    user_input: str,
+    template_dir: Optional[Path] = None,
+) -> str:
+    """
+    Generate plan creation prompt.
+
+    If template_dir is provided and contains plan-template.md, the template
+    is appended so the agent uses it as the required output structure.
+    """
+    prompt = PLAN_PROMPT_TEMPLATE.format(
         constitution=constitution,
         spec=spec,
-        user_input=user_input
+        user_input=user_input,
     )
 
+    if template_dir is not None:
+        template_path = Path(template_dir) / "plan-template.md"
+        if template_path.exists():
+            template_content = template_path.read_text(encoding="utf-8")
+            print(f"[OK] Loaded plan template from: {template_path}")
+            prompt += (
+                "\n\n---\n"
+                "## Required Output Structure\n\n"
+                "You MUST follow this exact template for your output.\n"
+                "Replace every `[PLACEHOLDER]` with real content.\n"
+                "Remove all HTML comments (`<!-- ... -->`) and `[REMOVE IF UNUSED]` markers.\n\n"
+                "```markdown\n"
+                f"{template_content}\n"
+                "```\n"
+                "\n\U0001f6a8 YOUR OUTPUT MUST MATCH THIS STRUCTURE EXACTLY \U0001f6a8\n"
+            )
 
-def get_tasks_prompt(constitution: str, spec: str, plan: str) -> str:
-    """Generate tasks creation prompt."""
-    return TASKS_PROMPT_TEMPLATE.format(
+    return prompt
+
+
+def get_tasks_prompt(
+    constitution: str,
+    spec: str,
+    plan: str,
+    template_dir: Optional[Path] = None,
+) -> str:
+    """
+    Generate tasks creation prompt.
+
+    If template_dir is provided and contains tasks-template.md, the template
+    is appended so the agent uses it as the required output structure.
+    """
+    prompt = TASKS_PROMPT_TEMPLATE.format(
         constitution=constitution,
         spec=spec,
-        plan=plan
+        plan=plan,
     )
+
+    if template_dir is not None:
+        template_path = Path(template_dir) / "tasks-template.md"
+        if template_path.exists():
+            template_content = template_path.read_text(encoding="utf-8")
+            print(f"[OK] Loaded tasks template from: {template_path}")
+            prompt += (
+                "\n\n---\n"
+                "## Required Output Structure\n\n"
+                "You MUST follow this exact template for your output.\n"
+                "Replace every `[PLACEHOLDER]` with real content from the spec and plan.\n"
+                "Remove all HTML comments (`<!-- ... -->`) and sample/example tasks.\n"
+                "Generate ACTUAL tasks based on the spec and plan — do NOT keep sample tasks.\n\n"
+                "```markdown\n"
+                f"{template_content}\n"
+                "```\n"
+                "\n\U0001f6a8 YOUR OUTPUT MUST MATCH THIS STRUCTURE EXACTLY \U0001f6a8\n"
+            )
+
+    return prompt
 
 
 def get_implement_prompt(constitution: str, spec: str, plan: str, tasks: str) -> str:

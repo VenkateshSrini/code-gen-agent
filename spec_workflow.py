@@ -20,7 +20,7 @@ Based on Microsoft Agent Framework documentation:
 import asyncio
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional, Dict, Any, List
+from typing import Optional, Dict, Any, List, Union
 from collections.abc import AsyncIterable
 
 from agent_framework import (
@@ -37,6 +37,7 @@ from spec_templates import (
     get_plan_prompt,
     get_tasks_prompt,
     get_implement_prompt,
+    get_template_dir,
 )
 
 
@@ -82,63 +83,100 @@ class ImplementationData:
     file_count: int
 
 
-class LoadContextExecutor(Executor):
+class LoadAndRouteExecutor(Executor):
     """
-    Executor that loads constitution.md and spec.md from the base directory.
-    
-    This is the entry point of the workflow.
+    Entry-point executor that loads context files and routes the workflow
+    to the appropriate phase based on which files already exist:
+
+    - Neither plan.md nor tasks.md exist  → full flow (generate plan → tasks → code)
+    - Only plan.md exists                 → resume from tasks (generate tasks → approval → code)
+    - Both plan.md and tasks.md exist     → skip straight to code generation (no approval needed)
     """
-    
+
     def __init__(self, id: str = "load_context"):
         super().__init__(id=id)
-    
+
     @handler
     async def load(
         self,
         input_data: Dict[str, str],
-        ctx: WorkflowContext[ContextData]
+        ctx: WorkflowContext[Union[ContextData, PlanData, TasksData]]
     ) -> None:
         """
-        Load constitution and spec files.
-        
+        Load constitution/spec and route to the correct phase.
+
         Args:
             input_data: Dict with 'base_dir' and 'tech_stack'
-            ctx: Workflow context for passing data to next executor
+            ctx: Workflow context
         """
         base_dir = input_data.get('base_dir', '.')
         tech_stack = input_data.get('tech_stack', 'Python 3.10+')
         base_path = Path(base_dir)
-        
+
         print(f"\n{'='*60}")
         print("PHASE 1: Loading Context")
         print(f"{'='*60}")
         print(f"Base Directory: {base_path}")
-        
+
         # Read constitution
         constitution_path = base_path / "constitution.md"
         if not constitution_path.exists():
             raise FileNotFoundError(f"Constitution not found: {constitution_path}")
-        
         constitution = constitution_path.read_text(encoding='utf-8')
         print(f"[OK] Loaded constitution ({len(constitution)} chars)")
-        
+
         # Read spec
         spec_path = base_path / "spec.md"
         if not spec_path.exists():
             raise FileNotFoundError(f"Spec not found: {spec_path}")
-        
         spec = spec_path.read_text(encoding='utf-8')
         print(f"[OK] Loaded specification ({len(spec)} chars)")
-        
-        # Pass context data to next executor
+
+        # Build base context (always needed)
         context_data = ContextData(
             constitution=constitution,
             spec=spec,
             base_dir=base_path,
             tech_stack=tech_stack
         )
-        
-        await ctx.send_message(context_data)
+
+        plan_path = base_path / "plan.md"
+        tasks_path = base_path / "tasks.md"
+        plan_exists = plan_path.exists()
+        tasks_exists = tasks_path.exists()
+
+        if plan_exists and tasks_exists:
+            # ── RESUME: both files present → skip straight to code generation ──
+            plan = plan_path.read_text(encoding='utf-8')
+            tasks = tasks_path.read_text(encoding='utf-8')
+            task_count = tasks.count('- [ ] T')
+            print(f"[RESUME] Found existing plan.md ({len(plan)} chars) and tasks.md ({len(tasks)} chars)")
+            print(f"[RESUME] {task_count} tasks detected — skipping plan/task generation and approval")
+            print(f"[RESUME] Proceeding directly to code generation...")
+            tasks_data = TasksData(
+                tasks=tasks,
+                task_count=task_count,
+                plan=plan,
+                context=context_data
+            )
+            await ctx.send_message(tasks_data)
+
+        elif plan_exists:
+            # ── RESUME: plan exists but no tasks → generate tasks then approve ──
+            plan = plan_path.read_text(encoding='utf-8')
+            print(f"[RESUME] Found existing plan.md ({len(plan)} chars) — skipping plan generation")
+            print(f"[RESUME] Proceeding to task generation...")
+            plan_data = PlanData(
+                plan=plan,
+                tech_stack=tech_stack,
+                context=context_data
+            )
+            await ctx.send_message(plan_data)
+
+        else:
+            # ── FULL FLOW: nothing exists → start from scratch ──
+            print("[INFO] No existing plan or tasks found — starting full workflow")
+            await ctx.send_message(context_data)
 
 
 class GeneratePlanExecutor(Executor):
@@ -185,9 +223,10 @@ class GeneratePlanExecutor(Executor):
         prompt = get_plan_prompt(
             context.constitution,
             context.spec,
-            tech_stack
+            tech_stack,
+            template_dir=get_template_dir(self.agent_type),
         )
-        
+
         # Generate plan using CodeGenerator
         print("\n[...] Generating plan (this may take a moment)...")
         plan = await self.code_generator.generate(prompt)
@@ -255,9 +294,10 @@ class GenerateTasksExecutor(Executor):
         prompt = get_tasks_prompt(
             context.constitution,
             context.spec,
-            plan_data.plan
+            plan_data.plan,
+            template_dir=get_template_dir(self.agent_type),
         )
-        
+
         # Generate tasks using CodeGenerator
         print("\n[...] Breaking down plan into tasks...")
         tasks = await self.code_generator.generate(prompt)
@@ -358,7 +398,7 @@ class ExecuteImplementationExecutor(Executor):
             await self.code_generator._ensure_started()
     
     @handler
-    async def execute(
+    async def run_implementation(
         self,
         tasks_data: TasksData,
         ctx: WorkflowContext[ImplementationData]
@@ -504,15 +544,24 @@ def create_spec_workflow(
         Configured workflow ready to run
     """
     # Create executors
-    load_context = LoadContextExecutor()
+    load_and_route = LoadAndRouteExecutor()
     generate_plan = GeneratePlanExecutor(agent_type=agent_type)
     generate_tasks = GenerateTasksExecutor(agent_type=agent_type)
     execute_implementation = ExecuteImplementationExecutor(agent_type=agent_type)
-    
-    # Build workflow with sequential edges
+
+    # Build workflow.
+    # load_and_route has three possible output types, so we add edges to all
+    # potential targets.  The framework dispatches each message to the executor
+    # whose @handler type-annotation matches.
+    #
+    #   ContextData  → generate_plan  (full flow)
+    #   PlanData     → generate_tasks (resume from plan)
+    #   TasksData    → execute_implementation (resume from both files)
     workflow = (
-        WorkflowBuilder(start_executor=load_context)
-        .add_edge(load_context, generate_plan)
+        WorkflowBuilder(start_executor=load_and_route)
+        .add_edge(load_and_route, generate_plan)          # full flow: ContextData
+        .add_edge(load_and_route, generate_tasks)         # resume: plan only
+        .add_edge(load_and_route, execute_implementation) # resume: plan + tasks
         .add_edge(generate_plan, generate_tasks)
         .add_edge(generate_tasks, execute_implementation)
     ).build()

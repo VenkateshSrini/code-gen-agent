@@ -20,7 +20,8 @@ from spec_templates import (
     get_tasks_prompt,
     get_implement_prompt,
     get_research_prompt,
-    get_data_model_prompt
+    get_data_model_prompt,
+    get_template_dir,
 )
 
 # Import the Microsoft Agent Framework workflow
@@ -262,8 +263,13 @@ class SpecOrchestrator:
         print(f"Tech Stack: {tech_stack}")
         
         # Generate prompt
-        prompt = get_plan_prompt(self.constitution, self.spec, tech_stack)
-        
+        prompt = get_plan_prompt(
+            self.constitution,
+            self.spec,
+            tech_stack,
+            template_dir=get_template_dir(self.agent_type),
+        )
+
         # Generate plan
         print("\n[...] Generating plan (this may take a moment)...")
         plan_response = await self.code_generator.generate(prompt)
@@ -366,8 +372,13 @@ class SpecOrchestrator:
         print(f"{'='*60}")
         
         # Generate prompt
-        prompt = get_tasks_prompt(self.constitution, self.spec, self.plan)
-        
+        prompt = get_tasks_prompt(
+            self.constitution,
+            self.spec,
+            self.plan,
+            template_dir=get_template_dir(self.agent_type),
+        )
+
         # Generate tasks
         print("\n[...] Breaking down plan into tasks...")
         tasks_response = await self.code_generator.generate(prompt)

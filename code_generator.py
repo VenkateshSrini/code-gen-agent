@@ -4,6 +4,8 @@ Provides utilities for generating code using Claude Agent or GitHub Copilot Agen
 """
 
 import os
+import re
+from pathlib import Path
 from typing import Optional, Union
 from dotenv import load_dotenv
 from agent_framework_github_copilot import GitHubCopilotAgent
@@ -37,6 +39,7 @@ You are an expert TECHNICAL ARCHITECT and code generator.
 3. ALWAYS GENERATE ACTUAL CONTENT: Provide the COMPLETE, FULL content immediately.
 4. NO SUMMARIES OR PLACEHOLDERS: Every response must be the actual, complete deliverable.
 5. START IMMEDIATELY: Begin with the actual content (e.g., "# Implementation Plan")
+6. NEVER WRITE FILES TO DISK: Do NOT use any file-write tools or create files on disk. Output ALL content (plan, tasks, code, documentation) ONLY as text in your response. Never respond with "Plan created at ...", "File written to ...", or any path reference.
 
 WHAT TO DO:
 - If asked for a plan → Provide the COMPLETE multi-page plan in Markdown
@@ -50,6 +53,7 @@ WHAT NEVER TO DO:
 - ❌ "Here's a summary..."
 - ❌ "Do you want me to proceed?"
 - ❌ Any meta-commentary about the request
+- ❌ Writing files to disk / responding with file paths instead of content
 
 You generate clean, well-documented, and idiomatic code based on requirements.
 You follow well-defined design patterns and ensure code has no syntax errors, 
@@ -69,14 +73,29 @@ performance issues, security vulnerabilities, or memory leaks.
                 }
             )
         else:
+            # Permission handler: deny all file-write operations so the agent
+            # cannot write plan/task content to disk instead of returning it.
+            def _deny_write_permission(request, context):
+                """Deny write/shell permissions to prevent the agent from writing files."""
+                from copilot.types import PermissionRequestResult
+                if request.get("kind") in ("write", "shell"):
+                    return PermissionRequestResult(kind="denied-interactively-by-user")
+                return PermissionRequestResult(kind="approved")
+
             # Initialize GitHub Copilot Agent (default)
+            # Pass instructions directly (not inside default_options) so
+            # _prepare_system_message picks it up.  Use mode="replace" to
+            # override Copilot's built-in brevity defaults completely.
+            timeout_seconds = float(os.getenv("GITHUB_COPILOT_TIMEOUT", "900"))
             self.agent = GitHubCopilotAgent(
+                instructions=final_instructions,
                 name="CodeGenerator",
                 description="An AI agent for generating and refactoring code",
                 default_options={
-                    "instructions": final_instructions,
+                    "system_message": {"mode": "replace"},
                     "model": model or os.getenv("GITHUB_COPILOT_MODEL", "gpt-5.2-codex"),
-                    "timeout": 300.0
+                    "timeout": timeout_seconds,
+                    "on_permission_request": _deny_write_permission,
                 }
             )
         
@@ -149,6 +168,46 @@ performance issues, security vulnerabilities, or memory leaks.
             return f"Error: {e}"
         
         result = "\n".join(full_text) if full_text else "No response generated"
+
+        # Detect model refusals to generate long content (e.g. tasks/plan).
+        # If the system instructions were correctly applied this should never
+        # trigger, but we surface a clear error rather than silently saving
+        # the refusal text to a file.
+        _refusal_patterns = [
+            r"sorry,\s*i\s*can['']t\s+provide",
+            r"i\s*can\s*generate\s*and\s*save.*to\s*a\s*file",
+            r"tell\s*me\s*where\s*to\s*write\s*it",
+            r"i['']m\s*constrained\s*to",
+            r"would\s*you\s*like\s*me\s*to\s*(create|write|save)",
+        ]
+        for pat in _refusal_patterns:
+            if re.search(pat, result, re.IGNORECASE):
+                print(f"[ERROR] Agent refused to generate content inline. Response:\n{result}")
+                raise RuntimeError(
+                    "GitHub Copilot agent refused to generate full content inline. "
+                    "Check that system instructions are being applied correctly "
+                    "(instructions must be passed directly, not inside default_options)."
+                )
+
+        # Fallback: if the agent wrote content to a file and returned a pointer
+        # (e.g. "Plan created at C:\...\plan.md."), read the actual file.
+        file_pointer_match = re.search(
+            r'(?:created|written|saved|output)\s+at\s+([^\n]+\.\w+)\.?\s*$',
+            result.strip(),
+            re.IGNORECASE,
+        )
+        if file_pointer_match and len(result.strip().splitlines()) <= 3:
+            file_path_str = file_pointer_match.group(1).strip().rstrip('.')
+            try:
+                file_path = Path(file_path_str)
+                if file_path.exists():
+                    print(f"[INFO] Agent wrote to {file_path}, reading content back...")
+                    result = file_path.read_text(encoding='utf-8')
+                else:
+                    print(f"[WARN] Agent returned a file pointer but '{file_path}' does not exist.")
+            except Exception as read_err:
+                print(f"[WARN] Could not read agent-created file '{file_path_str}': {read_err}")
+
         return result
     
     async def generate_function(self, function_name: str, description: str, 
