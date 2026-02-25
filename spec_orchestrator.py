@@ -22,6 +22,8 @@ from spec_templates import (
     get_research_prompt,
     get_data_model_prompt,
     get_template_dir,
+    parse_task_items,
+    get_implement_single_task_prompt,
 )
 
 # Import the Microsoft Agent Framework workflow
@@ -415,52 +417,64 @@ class SpecOrchestrator:
         print("PHASE 5: Executing Implementation")
         print(f"{'='*60}")
         
-        # Generate prompt
-        prompt = get_implement_prompt(
-            self.constitution,
-            self.spec,
-            self.plan,
-            self.tasks
-        )
-        
-        # Generate implementation
-        print("\n[...] Implementing all tasks (this will take several minutes)...")
-        implementation_response = await self.code_generator.generate(prompt)
-        
-        # Save full implementation output
-        filepath = self.context_manager.write_file(
-            "implementation.md",
-            implementation_response
-        )
-        print(f"[OK] Full implementation saved to: {filepath}")
-        
-        # Extract and save individual code files
+        # Parse tasks into individual file-level items
+        task_items = parse_task_items(self.tasks)
+        total = len(task_items)
+        print(f"\n[...] Implementing {total} files individually (task-by-task)...")
+
+        all_implementations = []
         generated_files = []
-        if save_code:
-            print("\n Extracting code files...")
-            code_blocks = self.context_manager.extract_code_blocks(implementation_response)
-            
-            for block in code_blocks:
-                if block['filename']:
-                    # Determine subdirectory from path
-                    file_path = Path(block['filename'])
-                    
-                    # Save to src/ subdirectory
-                    saved_path = self.context_manager.write_file(
-                        file_path.name,
-                        block['code'],
-                        subdir=str(file_path.parent) if file_path.parent != Path('.') else 'src'
-                    )
-                    generated_files.append(str(saved_path))
-                    print(f"  [OK] {block['filename']}")
-        
+
+        for idx, task_item in enumerate(task_items, 1):
+            print(f"\n[{idx}/{total}] {task_item['id']}: {task_item['file_path']}")
+
+            task_prompt = get_implement_single_task_prompt(
+                self.constitution,
+                self.spec,
+                self.plan,
+                self.tasks,
+                task_item,
+            )
+
+            try:
+                task_impl = await self.code_generator.generate(task_prompt)
+                all_implementations.append(
+                    f"## {task_item['id']}: {task_item['description']}\n\n{task_impl}"
+                )
+
+                if save_code:
+                    # Extract first code block and write it immediately
+                    code_blocks = self.context_manager.extract_code_blocks(task_impl)
+                    if code_blocks:
+                        file_path = Path(task_item["file_path"])
+                        saved_path = self.context_manager.write_file(
+                            file_path.name,
+                            code_blocks[0]["code"],
+                            subdir=str(file_path.parent) if file_path.parent != Path(".") else "src",
+                        )
+                        generated_files.append(str(saved_path))
+                        print(f"  [OK] Written: {saved_path}")
+                    else:
+                        print(f"  [WARN] No code block in response for {task_item['file_path']}")
+
+            except Exception as exc:
+                print(f"  [ERROR] {task_item['id']} failed: {exc}")
+                all_implementations.append(
+                    f"## {task_item['id']}: {task_item['description']}\n\n**ERROR**: {exc}"
+                )
+
+        # Save combined implementation log
+        implementation_response = "\n\n---\n\n".join(all_implementations)
+        filepath = self.context_manager.write_file("implementation.md", implementation_response)
+        print(f"\n[OK] Implementation log saved to: {filepath}")
+
         print(f"\n[OK] Implementation complete!")
         print(f"  Generated {len(generated_files)} code files")
-        
+
         return {
-            'implementation': implementation_response,
-            'generated_files': generated_files,
-            'file_count': len(generated_files)
+            "implementation": implementation_response,
+            "generated_files": generated_files,
+            "file_count": len(generated_files),
         }
     
     async def run_full_workflow(

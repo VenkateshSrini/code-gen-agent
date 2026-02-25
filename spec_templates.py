@@ -5,8 +5,9 @@ Contains template prompts that mirror GitHub Spec Kit's command templates.
 These templates guide AI agents through plan, tasks, and implementation phases.
 """
 
-from pathlib import Path
-from typing import Optional
+import re
+from pathlib import Path, PurePosixPath
+from typing import Optional, List, Dict
 
 # Maps agent_type to the workspace folder that holds its template/ directory.
 _AGENT_FOLDER_MAP = {
@@ -230,11 +231,20 @@ Where:
 - **[Story]**: Required for user story tasks: [US1], [US2], etc.
 - **Description**: Clear action with exact file path
 
-Examples:
+🚨 **BACKTICK RULE — MANDATORY — NO EXCEPTIONS** 🚨
+**EVERY FILE PATH IN EVERY TASK LINE MUST BE WRAPPED IN BACKTICKS.**
+**`path/to/file.ext` — NOT plain text, NOT in parentheses, ALWAYS backticks.**
+**A task line WITHOUT a backtick-quoted file path WILL BE SILENTLY IGNORED by the code generator.**
+
+Examples (✅ CORRECT — backtick-quoted file paths):
 - [ ] T001 Create project structure per implementation plan
+- [ ] T002 [P] Create User model in `src/models/user.py`
+- [ ] T003 [P] [US1] Implement UserService in `src/services/user_service.py`
+- [ ] T004 [US1] Create user registration endpoint in `src/api/users.py`
+
+❌ WRONG — these will be ignored by the code generator:
 - [ ] T002 [P] Create User model in src/models/user.py
-- [ ] T003 [P] [US1] Implement UserService in src/services/user_service.py
-- [ ] T004 [US1] Create user registration endpoint in src/api/users.py
+- [ ] T003 [P] [US1] Implement UserService in (src/services/user_service.py)
 
 ### Task Organization
 
@@ -245,9 +255,9 @@ Organize tasks into phases:
 Purpose: Project initialization and basic structure
 
 - [ ] T001 Create project structure per implementation plan
-- [ ] T002 Initialize [language] project with [framework] dependencies
-- [ ] T003 [P] Configure linting and formatting tools
-- [ ] T004 [P] Setup environment configuration
+- [ ] T002 [P] Initialize [language] project dependencies in `pyproject.toml`
+- [ ] T003 [P] Configure linting and formatting tools in `pyproject.toml` and `.ruff.toml`
+- [ ] T004 [P] Setup environment configuration in `.env.example`
 
 **## Phase 2: Foundational (Blocking Prerequisites)**
 
@@ -255,11 +265,11 @@ Purpose: Core infrastructure that MUST be complete before ANY user story
 
 ⚠️ CRITICAL: No user story work can begin until this phase is complete
 
-- [ ] T005 Setup database schema and migrations framework
-- [ ] T006 [P] Implement authentication/authorization framework
-- [ ] T007 [P] Setup API routing and middleware structure
-- [ ] T008 Create base models/entities
-- [ ] T009 Configure error handling and logging
+- [ ] T005 Setup database schema and migrations in `src/db/session.py`
+- [ ] T006 [P] Implement authentication framework in `src/core/security.py`
+- [ ] T007 [P] Setup API routing and middleware in `src/api/middleware/logging.py`
+- [ ] T008 [P] Create base models in `src/models/base.py`
+- [ ] T009 [P] Configure error handling and logging in `src/core/logging.py`
 
 Checkpoint: Foundation ready - user story implementation can now begin in parallel
 
@@ -273,9 +283,9 @@ Independent Test Criteria:
 - [ ] Returns expected [output]
 
 Tasks:
-- [ ] T010 [US1] Create [Entity] model in src/models/[name].py
-- [ ] T011 [US1] Implement [Service] in src/services/[name]_service.py
-- [ ] T012 [US1] Create [endpoint] in src/api/[name].py
+- [ ] T010 [US1] Create [Entity] model in `src/models/[name].py`
+- [ ] T011 [US1] Implement [Service] in `src/services/[name]_service.py`
+- [ ] T012 [US1] Create [endpoint] in `src/api/[name].py`
 - [ ] T013 [US1] Add validation logic for [rules]
 
 **## Phase 4: User Story 2 - [Title] (Priority: P2)**
@@ -286,11 +296,11 @@ Tasks:
 
 Purpose: Final touches and system-wide features
 
-- [ ] TXXX Add comprehensive error handling
-- [ ] TXXX [P] Implement logging throughout
-- [ ] TXXX [P] Add API documentation
-- [ ] TXXX Add integration tests
-- [ ] TXXX Performance optimization
+- [ ] TXXX Add comprehensive error handling in `src/api/error_handlers.py`
+- [ ] TXXX [P] Implement logging throughout in `src/core/logging.py`
+- [ ] TXXX [P] Add API documentation in `src/main.py`
+- [ ] TXXX [P] Add integration tests in `src/tests/integration/test_smoke.py`
+- [ ] TXXX [P] Performance optimization in `src/services/cache_service.py`
 
 ### Dependencies & Execution Order
 
@@ -341,9 +351,13 @@ Start IMMEDIATELY with the markdown content:
 Ensure ALL tasks have:
 1. Checkbox `- [ ]`
 2. Task ID (T001, T002, etc.)
-3. Exact file paths
+3. **FILE PATH WRAPPED IN BACKTICKS — `path/to/file.ext` — MANDATORY**
 4. Story labels for user story tasks
 5. [P] marker where applicable
+
+🚨 **BACKTICK REMINDER: EVERY TASK THAT GENERATES A FILE MUST HAVE THE FILE PATH IN BACKTICKS.**
+🚨 **PLAIN-TEXT PATHS `in src/foo/bar.py` WITHOUT BACKTICKS WILL BE SILENTLY IGNORED.**
+🚨 **CORRECT: `in \`src/foo/bar.py\`` — WRONG: `in src/foo/bar.py`**
 
 🚨 START YOUR RESPONSE WITH "# Task Breakdown" RIGHT NOW 🚨
 """
@@ -698,6 +712,167 @@ def get_implement_prompt(constitution: str, spec: str, plan: str, tasks: str) ->
         plan=plan,
         tasks=tasks,
         constitution_checks=constitution_checks
+    )
+
+
+# ---------------------------------------------------------------------------
+# Single-task implementation helpers
+# ---------------------------------------------------------------------------
+
+IMPLEMENT_SINGLE_TASK_PROMPT_TEMPLATE = """You are implementing ONE specific file as part of a spec-driven development workflow.
+
+## Context
+
+**Constitution** (project principles – follow them):
+{constitution}
+
+**Feature Specification**:
+{spec}
+
+**Implementation Plan**:
+{plan}
+
+**Full Task List** (for cross-reference only):
+{tasks}
+
+---
+
+## CURRENT TASK
+
+**Task ID**: {task_id}  
+**Description**: {description}  
+**File to create**: `{file_path}`
+
+---
+
+## Requirements
+
+1. Provide the COMPLETE, working code for `{file_path}` — **this file only**.
+2. Include all imports, docstrings, and type hints.
+3. No placeholders, no TODO comments — write actual working code.
+4. Follow patterns from the plan and constitution.
+
+## Output Format
+
+Respond with exactly ONE fenced code block:
+
+**File**: `{file_path}`
+
+```{language}
+[complete working code]
+```
+
+Optionally add a one-paragraph explanation after the code block.
+
+BEGIN THE IMPLEMENTATION OF `{file_path}` NOW:
+"""
+
+
+_FILE_EXTENSION_TO_LANGUAGE: Dict[str, str] = {
+    ".py": "python",
+    ".ts": "typescript",
+    ".js": "javascript",
+    ".java": "java",
+    ".toml": "toml",
+    ".yaml": "yaml",
+    ".yml": "yaml",
+    ".json": "json",
+    ".md": "markdown",
+    ".sh": "bash",
+    ".env": "bash",
+    ".ini": "ini",
+    ".cfg": "ini",
+    ".dockerfile": "dockerfile",
+}
+
+
+def _infer_language(file_path: str) -> str:
+    """Infer fenced-code language from file extension."""
+    ext = Path(file_path).suffix.lower()
+    if Path(file_path).name.lower() == "dockerfile":
+        return "dockerfile"
+    return _FILE_EXTENSION_TO_LANGUAGE.get(ext, "")
+
+
+def parse_task_items(tasks_content: str) -> List[Dict[str, str]]:
+    """
+    Parse tasks.md content and return a list of tasks that have a clear
+    file path to generate.
+
+    Each returned dict has keys:
+        id          – task identifier, e.g. "T002"
+        description – full description text from the task line
+        file_path   – the primary file path extracted from backtick quotes
+        language    – inferred language for the fenced code block
+    """
+    task_items: List[Dict[str, str]] = []
+
+    for line in tasks_content.split("\n"):
+        # Match: - [ ] T001 [P] some description in `path/file.py`
+        m = re.match(r"^\s*-\s*\[[ x]\]\s*(T\d+)\s+(?:\[P\]\s+)?(.+)$", line)
+        if not m:
+            continue
+
+        task_id = m.group(1)
+        description = m.group(2).strip()
+
+        # All backtick-quoted items on this line
+        backtick_items = re.findall(r"`([^`]+)`", description)
+
+        # Keep only items that look like files (have an extension, not ending in /)
+        file_items = [
+            item for item in backtick_items
+            if not item.endswith("/") and "." in PurePosixPath(item).name
+        ]
+
+        # Fallback: match unquoted file paths (paths with slashes or known extensions)
+        # This handles tasks.md files generated before backtick quoting was enforced.
+        if not file_items:
+            path_like = re.findall(r'(?:[\.\w-]+/)+[\.\w-]+', description)
+            filename_like = re.findall(
+                r'\b[\w.-]+\.(?:py|toml|yml|yaml|ini|cfg|env|json|md|txt|sh|example|lock|js|ts|html|css|ruff|rc|coveragerc)\b',
+                description,
+                re.IGNORECASE,
+            )
+            bare_items = path_like + filename_like
+            file_items = [
+                p for p in bare_items
+                if not p.endswith("/") and "." in PurePosixPath(p).name
+            ]
+
+        if not file_items:
+            continue
+
+        # Use the LAST backtick file path ("in `src/models/user.py`" pattern)
+        primary_file = file_items[-1].strip()
+
+        task_items.append({
+            "id": task_id,
+            "description": description,
+            "file_path": primary_file,
+            "language": _infer_language(primary_file),
+        })
+
+    return task_items
+
+
+def get_implement_single_task_prompt(
+    constitution: str,
+    spec: str,
+    plan: str,
+    tasks: str,
+    task_item: Dict[str, str],
+) -> str:
+    """Generate a focused prompt to implement a single task/file."""
+    return IMPLEMENT_SINGLE_TASK_PROMPT_TEMPLATE.format(
+        constitution=constitution,
+        spec=spec,
+        plan=plan,
+        tasks=tasks,
+        task_id=task_item["id"],
+        description=task_item["description"],
+        file_path=task_item["file_path"],
+        language=task_item.get("language", ""),
     )
 
 

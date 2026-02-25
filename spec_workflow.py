@@ -38,6 +38,8 @@ from spec_templates import (
     get_tasks_prompt,
     get_implement_prompt,
     get_template_dir,
+    parse_task_items,
+    get_implement_single_task_prompt,
 )
 
 
@@ -418,65 +420,79 @@ class ExecuteImplementationExecutor(Executor):
         tasks = tasks_data.tasks
         
         print(f"\n{'='*60}")
-        print("PHASE 4: Executing Implementation")
+        print("PHASE 4: Executing Implementation (task-by-task)")
         print(f"{'='*60}")
         print(f"Agent: {self.agent_type}")
-        
-        # Generate prompt
-        prompt = get_implement_prompt(
-            context.constitution,
-            context.spec,
-            plan,
-            tasks
-        )
-        
-        # Generate implementation
-        print("\n[...] Implementing all tasks (this will take several minutes)...")
-        implementation = await self.code_generator.generate(prompt)
-        
-        print(f"[OK] Implementation generated ({len(implementation)} chars)")
-        
-        # Save full implementation output (same directory as spec.md)
-        impl_file = context.base_dir / "implementation.md"
-        impl_file.write_text(implementation, encoding='utf-8')
-        print(f"[OK] Full implementation saved to: {impl_file}")
-        
+
         # Create outputs directory for code files
         outputs_dir = context.base_dir / "outputs"
-        
-        # Extract and save individual code files
-        generated_files = []
-        print("\n Extracting code files...")
-        code_blocks = self._extract_code_blocks(implementation)
-        
-        for block in code_blocks:
-            if block['filename']:
-                # Determine subdirectory from path
-                file_path = Path(block['filename'])
-                
-                # Save to src/ subdirectory
-                if file_path.parent != Path('.'):
+        outputs_dir.mkdir(parents=True, exist_ok=True)
+
+        # Parse tasks into individual file-level items
+        task_items = parse_task_items(tasks)
+        total = len(task_items)
+        print(f"\n[...] Implementing {total} files individually...")
+
+        all_implementations: List[str] = []
+        generated_files: List[str] = []
+
+        for idx, task_item in enumerate(task_items, 1):
+            print(f"\n[{idx}/{total}] {task_item['id']}: {task_item['file_path']}")
+
+            task_prompt = get_implement_single_task_prompt(
+                context.constitution,
+                context.spec,
+                plan,
+                tasks,
+                task_item,
+            )
+
+            try:
+                task_impl = await self.code_generator.generate(task_prompt)
+                all_implementations.append(
+                    f"## {task_item['id']}: {task_item['description']}\n\n{task_impl}"
+                )
+
+                # Determine save path from task's declared file_path
+                file_path = Path(task_item["file_path"])
+                if file_path.parent != Path("."):
                     output_path = outputs_dir / file_path.parent
                 else:
-                    output_path = outputs_dir / 'src'
-                
+                    output_path = outputs_dir / "src"
                 output_path.mkdir(parents=True, exist_ok=True)
-                saved_path = output_path / file_path.name
-                saved_path.write_text(block['code'], encoding='utf-8')
-                
-                generated_files.append(str(saved_path))
-                print(f"  [OK] {block['filename']}")
-        
+
+                # Extract first code block from response and write it
+                code_blocks = self._extract_code_blocks(task_impl)
+                if code_blocks:
+                    saved_path = output_path / file_path.name
+                    saved_path.write_text(code_blocks[0]["code"], encoding="utf-8")
+                    generated_files.append(str(saved_path))
+                    print(f"  [OK] Written: {saved_path}")
+                else:
+                    print(f"  [WARN] No code block in response for {task_item['file_path']}")
+
+            except Exception as exc:
+                print(f"  [ERROR] {task_item['id']} failed: {exc}")
+                all_implementations.append(
+                    f"## {task_item['id']}: {task_item['description']}\n\n**ERROR**: {exc}"
+                )
+
+        # Save combined implementation log
+        implementation = "\n\n---\n\n".join(all_implementations)
+        impl_file = context.base_dir / "implementation.md"
+        impl_file.write_text(implementation, encoding="utf-8")
+        print(f"\n[OK] Implementation log saved to: {impl_file}")
+
         print(f"\n[OK] Implementation complete!")
         print(f"  Generated {len(generated_files)} code files")
-        
+
         # Yield final output
         result = ImplementationData(
             implementation=implementation,
             generated_files=generated_files,
-            file_count=len(generated_files)
+            file_count=len(generated_files),
         )
-        
+
         await ctx.yield_output(result)
     
     def _extract_code_blocks(self, markdown_content: str) -> List[Dict[str, str]]:

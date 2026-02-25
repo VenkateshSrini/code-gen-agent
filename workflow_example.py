@@ -133,7 +133,10 @@ async def main():
             print("  - plan.md (implementation plan)")
             print("  - tasks.md (task breakdown)")
             print("  - implementation.md (full implementation)")
-            print("  - outputs/src/ (extracted code files)")
+            if result['file_count'] > 0:
+                print(f"  - outputs/ ({result['file_count']} code files extracted)")
+            else:
+                print("  - outputs/ (no code files extracted - check tasks.md format)")
             
             print("\n" + "="*70)
             print("You can now review and test the generated code!")
