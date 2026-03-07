@@ -22,7 +22,7 @@ async def example_1_full_workflow_copilot():
     print("="*70 + "\n")
     
     try:
-        async with SpecOrchestrator("document/co-pilot", "github_copilot") as orchestrator:
+        async with SpecOrchestrator("co-pilot", "github_copilot") as orchestrator:
             results = await orchestrator.run_full_workflow(
                 tech_stack="""
                 Python with FastAPI framework
@@ -41,7 +41,7 @@ async def example_1_full_workflow_copilot():
             
     except FileNotFoundError as e:
         print(f"\n✗ Error: {e}")
-        print("  Make sure 'document/co-pilot/constitution.md' and 'document/co-pilot/spec.md' exist")
+        print("  Make sure 'co-pilot/constitution.md' and 'co-pilot/spec.md' exist")
     except Exception as e:
         print(f"\n✗ Unexpected error: {e}")
 
@@ -57,7 +57,7 @@ async def example_2_full_workflow_claude():
     print("="*70 + "\n")
     
     try:
-        async with SpecOrchestrator("document/anthropic", "claude") as orchestrator:
+        async with SpecOrchestrator("anthropic", "claude") as orchestrator:
             results = await orchestrator.run_full_workflow(
                 tech_stack="""
                 React with TypeScript
@@ -75,7 +75,7 @@ async def example_2_full_workflow_claude():
             
     except FileNotFoundError as e:
         print(f"\n✗ Error: {e}")
-        print("  Make sure 'document/anthropic/constitution.md' and 'document/anthropic/spec.md' exist")
+        print("  Make sure 'anthropic/constitution.md' and 'anthropic/spec.md' exist")
     except Exception as e:
         print(f"\n✗ Unexpected error: {e}")
 
@@ -91,7 +91,7 @@ async def example_3_phase_by_phase():
     print("="*70 + "\n")
     
     try:
-        orchestrator = SpecOrchestrator("document/co-pilot", "github_copilot")
+        orchestrator = SpecOrchestrator("co-pilot", "github_copilot")
         await orchestrator.start()
         
         # Phase 1: Load context
@@ -142,7 +142,7 @@ async def example_4_plan_only():
     print("="*70 + "\n")
     
     try:
-        async with SpecOrchestrator("document/co-pilot") as orchestrator:
+        async with SpecOrchestrator("co-pilot") as orchestrator:
             await orchestrator.load_context()
             
             plan = await orchestrator.generate_plan(
@@ -156,7 +156,7 @@ async def example_4_plan_only():
             
             print("\n✓ Plan generated!")
             print(f"  Length: {len(plan)} characters")
-            print(f"  Saved to: document/co-pilot/plan.md")
+            print(f"  Saved to: co-pilot/plan.md")
             
     except Exception as e:
         print(f"\n✗ Error: {e}")
@@ -172,9 +172,9 @@ async def example_5_validate_workflow():
     print("EXAMPLE 5: Validate Workflow Artifacts")
     print("="*70 + "\n")
     
-    # Validate document/co-pilot outputs
-    print("Validating document/co-pilot workflow...")
-    results = validate_workflow(Path("document/co-pilot"))
+    # Validate co-pilot outputs
+    print("Validating co-pilot workflow...")
+    results = validate_workflow(Path("co-pilot"))
     
     print(f"\nValidation Results:")
     print(f"  Overall Valid: {results['overall_valid']}")
@@ -239,10 +239,10 @@ async def example_6_compare_agents():
     """
     
     # Note: This example requires identical constitution.md and spec.md
-    # in both document/co-pilot/ and document/anthropic/ directories
+    # in both co-pilot/ and anthropic/ directories
     
     print("This example would generate plans using both agents.")
-    print("Requires identical specs in both document/co-pilot/ and document/anthropic/ directories.")
+    print("Requires identical specs in both co-pilot/ and anthropic/ directories.")
     print("\nTo run:")
     print("1. Copy constitution.md and spec.md to both directories")
     print("2. Run full workflow for each agent")
@@ -260,7 +260,7 @@ async def example_7_custom_tech_stack():
     print("="*70 + "\n")
     
     try:
-        async with SpecOrchestrator("document/co-pilot") as orchestrator:
+        async with SpecOrchestrator("co-pilot") as orchestrator:
             await orchestrator.load_context()
             
             # Generate plan with unusual tech stack
@@ -304,7 +304,7 @@ async def main():
     print("7. Custom tech stack")
     
     print("\nNote: Examples require constitution.md and spec.md in respective directories")
-    print("      (document/co-pilot/ for GitHub Copilot, document/anthropic/ for Claude)")
+    print("      (co-pilot/ for GitHub Copilot, anthropic/ for Claude)")
     
     choice = input("\nEnter example number to run (1-7), or 'all' for validation only: ").strip()
     

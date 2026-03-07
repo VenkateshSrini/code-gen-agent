@@ -33,6 +33,7 @@ from agent_framework import (
 )
 
 from code_generator import CodeGenerator
+from context_providers import AnthropicCommandProvider, CopilotCommandProvider
 from spec_templates import (
     get_plan_prompt,
     get_tasks_prompt,
@@ -181,6 +182,11 @@ class LoadAndRouteExecutor(Executor):
             await ctx.send_message(context_data)
 
 
+def _make_provider(agent_type: str):
+    """Return the matching command context provider for the given agent type."""
+    return AnthropicCommandProvider() if agent_type == "claude" else CopilotCommandProvider()
+
+
 class GeneratePlanExecutor(Executor):
     """
     Executor that generates the implementation plan using CodeGenerator.
@@ -194,7 +200,10 @@ class GeneratePlanExecutor(Executor):
     async def _ensure_generator(self):
         """Initialize code generator if not already started."""
         if self.code_generator is None:
-            self.code_generator = CodeGenerator(agent_type=self.agent_type)
+            self.code_generator = CodeGenerator(
+                agent_type=self.agent_type,
+                context_provider=_make_provider(self.agent_type),
+            )
             await self.code_generator._ensure_started()
     
     @handler
@@ -231,7 +240,7 @@ class GeneratePlanExecutor(Executor):
 
         # Generate plan using CodeGenerator
         print("\n[...] Generating plan (this may take a moment)...")
-        plan = await self.code_generator.generate(prompt)
+        plan = await self.code_generator.generate_plan(prompt)
         
         print(f"[OK] Plan generated ({len(plan)} chars)")
         
@@ -266,7 +275,10 @@ class GenerateTasksExecutor(Executor):
     async def _ensure_generator(self):
         """Initialize code generator if not already started."""
         if self.code_generator is None:
-            self.code_generator = CodeGenerator(agent_type=self.agent_type)
+            self.code_generator = CodeGenerator(
+                agent_type=self.agent_type,
+                context_provider=_make_provider(self.agent_type),
+            )
             await self.code_generator._ensure_started()
     
     @handler
@@ -302,7 +314,7 @@ class GenerateTasksExecutor(Executor):
 
         # Generate tasks using CodeGenerator
         print("\n[...] Breaking down plan into tasks...")
-        tasks = await self.code_generator.generate(prompt)
+        tasks = await self.code_generator.generate_tasks(prompt)
         
         # Count tasks
         task_count = tasks.count('- [ ] T')
@@ -396,7 +408,10 @@ class ExecuteImplementationExecutor(Executor):
     async def _ensure_generator(self):
         """Initialize code generator if not already started."""
         if self.code_generator is None:
-            self.code_generator = CodeGenerator(agent_type=self.agent_type)
+            self.code_generator = CodeGenerator(
+                agent_type=self.agent_type,
+                context_provider=_make_provider(self.agent_type),
+            )
             await self.code_generator._ensure_started()
     
     @handler
@@ -448,7 +463,7 @@ class ExecuteImplementationExecutor(Executor):
             )
 
             try:
-                task_impl = await self.code_generator.generate(task_prompt)
+                task_impl = await self.code_generator.generate_implement(task_prompt)
                 all_implementations.append(
                     f"## {task_item['id']}: {task_item['description']}\n\n{task_impl}"
                 )

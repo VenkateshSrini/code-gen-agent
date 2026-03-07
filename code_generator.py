@@ -8,6 +8,7 @@ import re
 from pathlib import Path
 from typing import Optional, Union
 from dotenv import load_dotenv
+from agent_framework import BaseContextProvider
 from agent_framework_github_copilot import GitHubCopilotAgent
 from agent_framework_claude import ClaudeAgent
 
@@ -15,7 +16,7 @@ from agent_framework_claude import ClaudeAgent
 class CodeGenerator:
     """A class to handle code generation using Claude Agent or GitHub Copilot Agent."""
     
-    def __init__(self, model: Optional[str] = None, instructions: Optional[str] = None, agent_type: Optional[str] = None):
+    def __init__(self, model: Optional[str] = None, instructions: Optional[str] = None, agent_type: Optional[str] = None, context_provider: Optional[BaseContextProvider] = None):
         """
         Initialize the Code Generator.
         
@@ -23,6 +24,11 @@ class CodeGenerator:
             model: Model to use (e.g., "gpt-4o", "claude-sonnet-4", "sonnet", "opus", "haiku", "o1")
             instructions: Custom system instructions for the agent
             agent_type: Agent type to use ("claude" or "github_copilot"). If None, reads from AGENT_TYPE env var
+            context_provider: Optional BaseContextProvider to inject into the agent.
+                Pass an AnthropicCommandProvider or CopilotCommandProvider (or any
+                custom subclass) to load speckit command files as agent context.
+                CodeGenerator only depends on the abstract BaseContextProvider type;
+                the concrete class is the caller's responsibility.
         """
         load_dotenv(override=True)
         
@@ -62,10 +68,14 @@ performance issues, security vulnerabilities, or memory leaks.
         
         final_instructions = instructions or default_instructions
         
+        _context_providers = [context_provider] if context_provider is not None else None
+        self._skill_provider = context_provider
+
         if self.agent_type == "claude":
             # Initialize Claude Agent
             self.agent = ClaudeAgent(
                 instructions=final_instructions,
+                context_providers=_context_providers,
                 default_options={
                     "model": model or os.getenv("CLAUDE_MODEL", "sonnet"),
                     "permission_mode": "default",
@@ -91,6 +101,7 @@ performance issues, security vulnerabilities, or memory leaks.
                 instructions=final_instructions,
                 name="CodeGenerator",
                 description="An AI agent for generating and refactoring code",
+                context_providers=_context_providers,
                 default_options={
                     "system_message": {"mode": "replace"},
                     "model": model or os.getenv("GITHUB_COPILOT_MODEL", "gpt-5.2-codex"),
@@ -321,3 +332,72 @@ Code:
 Provide the corrected code with explanations of the fixes."""
         
         return await self.generate(prompt)
+
+    # ------------------------------------------------------------------
+    # Skill-aware helpers
+    # ------------------------------------------------------------------
+
+    async def _generate_with_skill(self, skill: str, prompt: str, context: Optional[str] = None) -> str:
+        """
+        Set the skill on the injected context provider, then call generate().
+
+        If no context_provider was injected at construction time this is a
+        transparent pass-through to generate() — no exception is raised.
+
+        Args:
+            skill: Skill name matching one of the speckit command files
+                   (e.g. "plan", "tasks", "specify", "implement" …).
+            prompt: The generation prompt.
+            context: Optional additional context prepended to the prompt.
+
+        Returns:
+            Generated content as a string.
+        """
+        if self._skill_provider is not None:
+            skill_content = self._skill_provider.load_skill(skill)
+            if skill_content:
+                # Prepend the command file content before the user prompt so the
+                # agent receives the full skill instructions regardless of whether
+                # the framework's before_run pipeline is invoked.
+                prompt = f"{skill_content}\n\n---\n\n{prompt}"
+        return await self.generate(prompt, context)
+
+    # ------------------------------------------------------------------
+    # Dedicated wrapper methods — one per speckit command
+    # ------------------------------------------------------------------
+
+    async def generate_plan(self, prompt: str, context: Optional[str] = None) -> str:
+        """Generate a project/feature plan using the speckit.plan command."""
+        return await self._generate_with_skill("plan", prompt, context)
+
+    async def generate_tasks(self, prompt: str, context: Optional[str] = None) -> str:
+        """Generate a task breakdown using the speckit.tasks command."""
+        return await self._generate_with_skill("tasks", prompt, context)
+
+    async def generate_spec(self, prompt: str, context: Optional[str] = None) -> str:
+        """Generate a feature specification using the speckit.specify command."""
+        return await self._generate_with_skill("specify", prompt, context)
+
+    async def generate_implement(self, prompt: str, context: Optional[str] = None) -> str:
+        """Generate implementation code using the speckit.implement command."""
+        return await self._generate_with_skill("implement", prompt, context)
+
+    async def generate_analyze(self, prompt: str, context: Optional[str] = None) -> str:
+        """Run cross-artifact analysis using the speckit.analyze command."""
+        return await self._generate_with_skill("analyze", prompt, context)
+
+    async def generate_clarify(self, prompt: str, context: Optional[str] = None) -> str:
+        """Clarify ambiguities in a spec using the speckit.clarify command."""
+        return await self._generate_with_skill("clarify", prompt, context)
+
+    async def generate_constitution(self, prompt: str, context: Optional[str] = None) -> str:
+        """Generate or update the project constitution using the speckit.constitution command."""
+        return await self._generate_with_skill("constitution", prompt, context)
+
+    async def generate_checklist(self, prompt: str, context: Optional[str] = None) -> str:
+        """Generate a requirements checklist using the speckit.checklist command."""
+        return await self._generate_with_skill("checklist", prompt, context)
+
+    async def generate_tasks_to_issues(self, prompt: str, context: Optional[str] = None) -> str:
+        """Convert tasks to GitHub issues using the speckit.taskstoissues command."""
+        return await self._generate_with_skill("taskstoissues", prompt, context)

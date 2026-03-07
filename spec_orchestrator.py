@@ -15,6 +15,7 @@ from typing import Optional, Dict, Any, List
 from datetime import datetime
 
 from code_generator import CodeGenerator
+from context_providers import AnthropicCommandProvider, CopilotCommandProvider
 from spec_templates import (
     get_plan_prompt,
     get_tasks_prompt,
@@ -195,7 +196,15 @@ class SpecOrchestrator:
     async def start(self):
         """Initialize the code generator agent."""
         if not self._started:
-            self.code_generator = CodeGenerator(agent_type=self.agent_type)
+            provider = (
+                AnthropicCommandProvider()
+                if self.agent_type == "claude"
+                else CopilotCommandProvider()
+            )
+            self.code_generator = CodeGenerator(
+                agent_type=self.agent_type,
+                context_provider=provider,
+            )
             await self.code_generator._ensure_started()
             self._started = True
     
@@ -274,7 +283,7 @@ class SpecOrchestrator:
 
         # Generate plan
         print("\n[...] Generating plan (this may take a moment)...")
-        plan_response = await self.code_generator.generate(prompt)
+        plan_response = await self.code_generator.generate_plan(prompt)
         
         self.plan = plan_response
         
@@ -383,7 +392,7 @@ class SpecOrchestrator:
 
         # Generate tasks
         print("\n[...] Breaking down plan into tasks...")
-        tasks_response = await self.code_generator.generate(prompt)
+        tasks_response = await self.code_generator.generate_tasks(prompt)
         
         self.tasks = tasks_response
         
@@ -437,7 +446,7 @@ class SpecOrchestrator:
             )
 
             try:
-                task_impl = await self.code_generator.generate(task_prompt)
+                task_impl = await self.code_generator.generate_implement(task_prompt)
                 all_implementations.append(
                     f"## {task_item['id']}: {task_item['description']}\n\n{task_impl}"
                 )
