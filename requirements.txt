@@ -1,7 +1,5 @@
 # Microsoft Agent Framework packages
-agent-framework-core
-agent-framework-github-copilot
-agent-framework-claude
+agent-framework[all]
 
 # Utilities
 python-dotenv
