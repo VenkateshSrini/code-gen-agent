@@ -22,12 +22,22 @@ Usage:
 """
 
 import logging
+import re
 from pathlib import Path
 from typing import Any, Optional
 
 from agent_framework import BaseContextProvider, SessionContext, AgentSession, SupportsAgentRun
 
 logger = logging.getLogger(__name__)
+
+
+def _strip_frontmatter(content: str) -> str:
+    """Remove YAML frontmatter block (---...---) from start of file, if present."""
+    if content.startswith('---'):
+        match = re.match(r'^---\n.*?\n---\n\n?', content, re.DOTALL)
+        if match:
+            return content[match.end():]
+    return content
 
 _BASE_DIR = Path(__file__).parent
 
@@ -87,6 +97,7 @@ class AnthropicCommandProvider(BaseContextProvider):
             )
             return None
         content = skill_path.read_text(encoding="utf-8")
+        content = _strip_frontmatter(content)
         print(f"[AnthropicCommandProvider] Injected skill '{skill}' from: {skill_path}")
         logger.debug(
             "[AnthropicCommandProvider] Injected skill '%s' from: %s",
@@ -154,6 +165,7 @@ class CopilotCommandProvider(BaseContextProvider):
             )
             return None
         content = skill_path.read_text(encoding="utf-8")
+        content = _strip_frontmatter(content)
         print(f"[CopilotCommandProvider] Injected skill '{skill}' from: {skill_path}")
         logger.debug(
             "[CopilotCommandProvider] Injected skill '%s' from: %s",

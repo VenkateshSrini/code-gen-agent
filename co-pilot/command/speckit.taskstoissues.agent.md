@@ -3,28 +3,23 @@ description: Convert existing tasks into actionable, dependency-ordered GitHub i
 tools: ['github/github-mcp-server/issue_write']
 ---
 
-## User Input
+## Context
 
-```text
-$ARGUMENTS
-```
-
-You **MUST** consider the user input before proceeding (if not empty).
+{arguments}
 
 ## Outline
 
-1. Run `.specify/scripts/powershell/check-prerequisites.ps1 -Json -RequireTasks -IncludeTasks` from repo root and parse FEATURE_DIR and AVAILABLE_DOCS list. All paths must be absolute. For single quotes in args like "I'm Groot", use escape syntax: e.g 'I'\''m Groot' (or double-quote if possible: "I'm Groot").
-1. From the executed script, extract the path to **tasks**.
-1. Get the Git remote by running:
+1. **Load task context**: Use the tasks provided in the context above. If no tasks are available, report an error and suggest running `speckit.tasks` first.
 
-```bash
-git config --get remote.origin.url
-```
+2. **Validate repository context**: Only proceed if the context indicates this is a GitHub repository. If the repository remote is not a GitHub URL, output a warning and stop.
 
 > [!CAUTION]
-> ONLY PROCEED TO NEXT STEPS IF THE REMOTE IS A GITHUB URL
+> ONLY PROCEED TO NEXT STEPS IF THE CONTEXT CONFIRMS A GITHUB REPOSITORY
 
-1. For each task in the list, use the GitHub MCP server to create a new issue in the repository that is representative of the Git remote.
+3. **Convert tasks to GitHub issues**: For each task in the list, format a GitHub issue with:
+   - **Title**: Task description (without the checkbox and ID prefix)
+   - **Body**: Include task ID, phase, dependencies, file path, and parallel marker if present
+   - **Labels**: Suggest appropriate labels (e.g., `enhancement`, phase name, user story label)
 
 > [!CAUTION]
 > UNDER NO CIRCUMSTANCES EVER CREATE ISSUES IN REPOSITORIES THAT DO NOT MATCH THE REMOTE URL

@@ -63,6 +63,7 @@ async def main():
         return 1
     
     # Verify required files exist
+    
     constitution_file = base_path / "constitution.md"
     spec_file = base_path / "spec.md"
     

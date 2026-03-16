@@ -238,7 +238,7 @@ class GeneratePlanExecutor(Executor):
             template_dir=get_template_dir(self.agent_type),
         )
 
-        # Generate plan using CodeGenerator
+        # Generate plan
         print("\n[...] Generating plan (this may take a moment)...")
         plan = await self.code_generator.generate_plan(prompt)
         
@@ -312,7 +312,7 @@ class GenerateTasksExecutor(Executor):
             template_dir=get_template_dir(self.agent_type),
         )
 
-        # Generate tasks using CodeGenerator
+        # Generate tasks
         print("\n[...] Breaking down plan into tasks...")
         tasks = await self.code_generator.generate_tasks(prompt)
         
@@ -463,7 +463,7 @@ class ExecuteImplementationExecutor(Executor):
             )
 
             try:
-                task_impl = await self.code_generator.generate_implement(task_prompt)
+                task_impl = await self.code_generator.generate(task_prompt)
                 all_implementations.append(
                     f"## {task_item['id']}: {task_item['description']}\n\n{task_impl}"
                 )

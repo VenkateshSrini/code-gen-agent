@@ -3,14 +3,99 @@ Code Generator Module
 Provides utilities for generating code using Claude Agent or GitHub Copilot Agent
 """
 
+import asyncio
 import os
 import re
 from pathlib import Path
-from typing import Optional, Union
+from typing import Any, Optional, Sequence, Union
 from dotenv import load_dotenv
-from agent_framework import BaseContextProvider
+from agent_framework import AgentResponse, AgentSession, BaseContextProvider, Content, Message, normalize_messages
+from agent_framework.exceptions import AgentException as ServiceException
 from agent_framework_github_copilot import GitHubCopilotAgent
 from agent_framework_claude import ClaudeAgent
+from copilot.generated.session_events import SessionEventType
+
+DEFAULT_TIMEOUT_SECONDS = 900
+IDLE_GRACE_SECONDS = 5  # seconds to wait for SESSION_IDLE after receiving ASSISTANT_MESSAGE
+
+
+class _RobustCopilotAgent(GitHubCopilotAgent):
+    """Subclass that gracefully handles SESSION_IDLE never firing.
+
+    The default GitHubCopilotAgent raises TimeoutError when the Copilot session
+    does not emit SESSION_IDLE (which happens when an agentic model like
+    gpt-5.3-codex tries to call a tool that gets permission-denied).  The
+    response text IS delivered (visible in the chat window) but the session
+    state machine stalls.  This subclass catches the timeout and returns
+    whatever assistant message was received before the deadline.
+    """
+
+    async def _run_impl(
+        self,
+        messages: "str | Message | Sequence[str | Message] | None" = None,
+        *,
+        session: "AgentSession | None" = None,
+        options: "dict | None" = None,
+        **kwargs: Any,
+    ) -> AgentResponse:
+        if not self._started:
+            await self.start()
+
+        if not session:
+            session = self.create_session()
+
+        opts: dict[str, Any] = dict(options) if options else {}
+        timeout = opts.pop("timeout", None) or DEFAULT_TIMEOUT_SECONDS
+
+        copilot_session = await self._get_or_create_session(session, streaming=False, runtime_options=opts)
+        input_messages = normalize_messages(messages)
+        prompt = "\n".join([message.text for message in input_messages])
+
+        idle_event = asyncio.Event()
+        last_assistant_message = None
+        loop = asyncio.get_event_loop()
+
+        def handler(event) -> None:
+            nonlocal last_assistant_message
+            if event.type == SessionEventType.ASSISTANT_MESSAGE:
+                last_assistant_message = event
+                # If SESSION_IDLE doesn't follow within grace period, unblock anyway
+                loop.call_later(IDLE_GRACE_SECONDS, idle_event.set)
+            elif event.type in (SessionEventType.SESSION_IDLE, SessionEventType.SESSION_ERROR):
+                idle_event.set()
+
+        unsubscribe = copilot_session.on(handler)
+        try:
+            await copilot_session.send({"prompt": prompt})
+            try:
+                await asyncio.wait_for(idle_event.wait(), timeout=timeout)
+            except asyncio.TimeoutError:
+                # SESSION_IDLE never fired (e.g. tool-permission denial stalled
+                # the session).  If we already received the assistant message,
+                # use it rather than failing the entire workflow.
+                if last_assistant_message is None:
+                    raise ServiceException(
+                        f"GitHub Copilot request timed out after {timeout}s with no response"
+                    )
+                # Fall through: return what we received.
+        finally:
+            unsubscribe()
+
+        response_messages: list[Message] = []
+        if last_assistant_message and last_assistant_message.type == SessionEventType.ASSISTANT_MESSAGE:
+            content = last_assistant_message.data.content
+            message_id = last_assistant_message.data.message_id
+            if content:
+                response_messages.append(
+                    Message(
+                        role="assistant",
+                        contents=[Content.from_text(content)],
+                        message_id=message_id,
+                        raw_representation=last_assistant_message,
+                    )
+                )
+
+        return AgentResponse(messages=response_messages, response_id=None)
 
 
 class CodeGenerator:
@@ -97,14 +182,14 @@ performance issues, security vulnerabilities, or memory leaks.
             # _prepare_system_message picks it up.  Use mode="replace" to
             # override Copilot's built-in brevity defaults completely.
             timeout_seconds = float(os.getenv("GITHUB_COPILOT_TIMEOUT", "900"))
-            self.agent = GitHubCopilotAgent(
+            self.agent = _RobustCopilotAgent(
                 instructions=final_instructions,
                 name="CodeGenerator",
                 description="An AI agent for generating and refactoring code",
                 context_providers=_context_providers,
                 default_options={
                     "system_message": {"mode": "replace"},
-                    "model": model or os.getenv("GITHUB_COPILOT_MODEL", "gpt-5.2-codex"),
+                    "model": model or os.getenv("GITHUB_COPILOT_MODEL", "gpt-5.3-codex"),
                     "timeout": timeout_seconds,
                     "on_permission_request": _deny_write_permission,
                 }
@@ -356,10 +441,12 @@ Provide the corrected code with explanations of the fixes."""
         if self._skill_provider is not None:
             skill_content = self._skill_provider.load_skill(skill)
             if skill_content:
-                # Prepend the command file content before the user prompt so the
-                # agent receives the full skill instructions regardless of whether
-                # the framework's before_run pipeline is invoked.
-                prompt = f"{skill_content}\n\n---\n\n{prompt}"
+                if '{arguments}' in skill_content:
+                    # Template substitution: embed the full prompt where {arguments} appears
+                    prompt = skill_content.replace('{arguments}', prompt)
+                else:
+                    # Fallback: prepend skill instructions before the prompt
+                    prompt = f"{skill_content}\n\n---\n\n{prompt}"
         return await self.generate(prompt, context)
 
     # ------------------------------------------------------------------

@@ -23,24 +23,16 @@ description: Generate a custom checklist for the current feature based on user r
 
 **Metaphor**: If your spec is code written in English, the checklist is its unit test suite. You're testing whether the requirements are well-written, complete, unambiguous, and ready for implementation - NOT whether the implementation works.
 
-## User Input
+## Context
 
-```text
-$ARGUMENTS
-```
-
-You **MUST** consider the user input before proceeding (if not empty).
+{arguments}
 
 ## Execution Steps
 
-1. **Setup**: Run `.specify/scripts/powershell/check-prerequisites.ps1 -Json` from repo root and parse JSON for FEATURE_DIR and AVAILABLE_DOCS list.
-   - All file paths must be absolute.
-   - For single quotes in args like "I'm Groot", use escape syntax: e.g 'I'\''m Groot' (or double-quote if possible: "I'm Groot").
-
-2. **Clarify intent (dynamic)**: Derive up to THREE initial contextual clarifying questions (no pre-baked catalog). They MUST:
+1. **Clarify intent (dynamic)**: Derive up to THREE initial contextual clarifying questions (no pre-baked catalog). They MUST:
    - Be generated from the user's phrasing + extracted signals from spec/plan/tasks
    - Only ask about information that materially changes checklist content
-   - Be skipped individually if already unambiguous in `$ARGUMENTS`
+   - Be skipped individually if already unambiguous in `{arguments}`
    - Prefer precision over breadth
 
    Generation algorithm:
@@ -69,16 +61,16 @@ You **MUST** consider the user input before proceeding (if not empty).
 
    Output the questions (label Q1/Q2/Q3). After answers: if ≥2 scenario classes (Alternate / Exception / Recovery / Non-Functional domain) remain unclear, you MAY ask up to TWO more targeted follow‑ups (Q4/Q5) with a one-line justification each (e.g., "Unresolved recovery path risk"). Do not exceed five total questions. Skip escalation if user explicitly declines more.
 
-3. **Understand user request**: Combine `$ARGUMENTS` + clarifying answers:
+2. **Understand user request**: Combine `{arguments}` + clarifying answers:
    - Derive checklist theme (e.g., security, review, deploy, ux)
    - Consolidate explicit must-have items mentioned by user
    - Map focus selections to category scaffolding
    - Infer any missing context from spec/plan/tasks (do NOT hallucinate)
 
-4. **Load feature context**: Read from FEATURE_DIR:
-   - spec.md: Feature requirements and scope
-   - plan.md (if exists): Technical details, dependencies
-   - tasks.md (if exists): Implementation tasks
+3. **Load feature context**: Use the feature context provided above:
+   - Feature requirements and scope
+   - Technical details, dependencies (if provided)
+   - Implementation tasks (if provided)
 
    **Context Loading Strategy**:
    - Load only necessary portions relevant to active focus areas (avoid full-file dumping)
@@ -86,14 +78,9 @@ You **MUST** consider the user input before proceeding (if not empty).
    - Use progressive disclosure: add follow-on retrieval only if gaps detected
    - If source docs are large, generate interim summary items instead of embedding raw text
 
-5. **Generate checklist** - Create "Unit Tests for Requirements":
-   - Create `FEATURE_DIR/checklists/` directory if it doesn't exist
-   - Generate unique checklist filename:
-     - Use short, descriptive name based on domain (e.g., `ux.md`, `api.md`, `security.md`)
-     - Format: `[domain].md`
-     - If file exists, append to existing file
+4. **Generate checklist** - Create "Unit Tests for Requirements":
    - Number items sequentially starting from CHK001
-   - Each `/speckit.checklist` run creates a NEW file (never overwrites existing checklists)
+   - Output the complete checklist as markdown text in your response.
 
    **CORE PRINCIPLE - Test the Requirements, Not the Implementation**:
    Every checklist item MUST evaluate the REQUIREMENTS THEMSELVES for:
@@ -203,9 +190,9 @@ You **MUST** consider the user input before proceeding (if not empty).
    - ✅ "Are [edge cases/scenarios] addressed in requirements?"
    - ✅ "Does the spec define [missing aspect]?"
 
-6. **Structure Reference**: Generate the checklist following the canonical template in `.specify/templates/checklist-template.md` for title, meta section, category headings, and ID formatting. If template is unavailable, use: H1 title, purpose/created meta lines, `##` category sections containing `- [ ] CHK### <requirement item>` lines with globally incrementing IDs starting at CHK001.
+5. **Structure Reference**: Generate the checklist following the canonical structure: H1 title, purpose/created meta lines, `##` category sections containing `- [ ] CHK### <requirement item>` lines with globally incrementing IDs starting at CHK001.
 
-7. **Report**: Output full path to created checklist, item count, and remind user that each run creates a new file. Summarize:
+6. **Report**: Output item count and summarize:
    - Focus areas selected
    - Depth level
    - Actor/timing

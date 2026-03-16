@@ -1,14 +1,6 @@
----
-description: Perform a non-destructive cross-artifact consistency and quality analysis across spec.md, plan.md, and tasks.md after task generation.
----
+## Context
 
-## User Input
-
-```text
-$ARGUMENTS
-```
-
-You **MUST** consider the user input before proceeding (if not empty).
+{arguments}
 
 ## Goal
 
@@ -22,16 +14,9 @@ Identify inconsistencies, duplications, ambiguities, and underspecified items ac
 
 ## Execution Steps
 
-### 1. Initialize Analysis Context
+### 1. Load Analysis Context
 
-Run `.specify/scripts/powershell/check-prerequisites.ps1 -Json -RequireTasks -IncludeTasks` once from repo root and parse JSON for FEATURE_DIR and AVAILABLE_DOCS. Derive absolute paths:
-
-- SPEC = FEATURE_DIR/spec.md
-- PLAN = FEATURE_DIR/plan.md
-- TASKS = FEATURE_DIR/tasks.md
-
-Abort with an error message if any required file is missing (instruct the user to run missing prerequisite command).
-For single quotes in args like "I'm Groot", use escape syntax: e.g 'I'\''m Groot' (or double-quote if possible: "I'm Groot").
+Use the spec, plan, tasks, and constitution provided in the context above. Abort with an error message if any required artifact (spec, plan, tasks) is missing from the context (instruct the user to provide the missing artifact).
 
 ### 2. Load Artifacts (Progressive Disclosure)
 
@@ -62,7 +47,7 @@ Load only the minimal necessary context from each artifact:
 
 **From constitution:**
 
-- Load `.specify/memory/constitution.md` for principle validation
+- Use the constitution provided in the context above.
 
 ### 3. Build Semantic Models
 
@@ -179,6 +164,4 @@ Ask the user: "Would you like me to suggest concrete remediation edits for the t
 - **Use examples over exhaustive rules** (cite specific instances, not generic patterns)
 - **Report zero issues gracefully** (emit success report with coverage statistics)
 
-## Context
 
-$ARGUMENTS

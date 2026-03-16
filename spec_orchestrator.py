@@ -446,7 +446,7 @@ class SpecOrchestrator:
             )
 
             try:
-                task_impl = await self.code_generator.generate_implement(task_prompt)
+                task_impl = await self.code_generator.generate(task_prompt)
                 all_implementations.append(
                     f"## {task_item['id']}: {task_item['description']}\n\n{task_impl}"
                 )
