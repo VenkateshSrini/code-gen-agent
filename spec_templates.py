@@ -5,6 +5,7 @@ Contains template prompts that mirror GitHub Spec Kit's command templates.
 These templates guide AI agents through plan, tasks, and implementation phases.
 """
 
+import os
 import re
 from pathlib import Path, PurePosixPath
 from typing import Optional, List, Dict
@@ -14,6 +15,9 @@ _AGENT_FOLDER_MAP = {
     "github_copilot": "co-pilot",
     "claude": "anthropic",
 }
+
+
+_DEFAULT_SPEC_PROMPT_MAX_TOKENS = 12000
 
 
 def get_template_dir(agent_type: str, root: Optional[Path] = None) -> Optional[Path]:
@@ -357,7 +361,7 @@ Ensure ALL tasks have:
 
 🚨 **BACKTICK REMINDER: EVERY TASK THAT GENERATES A FILE MUST HAVE THE FILE PATH IN BACKTICKS.**
 🚨 **PLAIN-TEXT PATHS `in src/foo/bar.py` WITHOUT BACKTICKS WILL BE SILENTLY IGNORED.**
-🚨 **CORRECT: `in \`src/foo/bar.py\`` — WRONG: `in src/foo/bar.py`**
+🚨 **CORRECT: in `src/foo/bar.py` — WRONG: in src/foo/bar.py**
 
 🚨 START YOUR RESPONSE WITH "# Task Breakdown" RIGHT NOW 🚨
 """
@@ -624,6 +628,126 @@ Your response will be saved directly to a file - DO NOT include meta-commentary.
 """
 
 
+SPEC_PROMPT_TEMPLATE = """🚨 IGNORE ALL LENGTH CONSTRAINTS - PROVIDE COMPLETE SPEC 🚨
+
+You are executing the SPEC generation phase of a spec-driven development workflow.
+
+## User Input
+
+{user_input}
+
+## Task
+
+Generate a complete, high-quality `spec.md` in markdown using the required template structure.
+
+Rules:
+1. Fill every placeholder with concrete content from user input.
+2. Keep unknowns as `[NEEDS CLARIFICATION: ...]` only when truly required.
+3. Do NOT write files; output markdown only.
+4. Do NOT include meta commentary.
+
+## Output
+
+Return only the markdown specification document.
+"""
+
+
+def _estimate_tokens(text: str) -> int:
+    """Rough token estimate without external dependencies."""
+    if not text:
+        return 0
+    # Conservative approximation used only for prompt budgeting.
+    return max(1, len(text) // 4)
+
+
+def _extract_template_main_sections(template_content: str) -> str:
+    """Strip comment-heavy guidance to reduce token usage while keeping structure."""
+    lines = template_content.splitlines()
+    kept: List[str] = []
+    in_html_comment = False
+    for line in lines:
+        stripped = line.strip()
+        if stripped.startswith("<!--"):
+            in_html_comment = True
+        if not in_html_comment:
+            kept.append(line)
+        if in_html_comment and stripped.endswith("-->"):
+            in_html_comment = False
+    compact = "\n".join(kept).strip()
+    return compact if compact else template_content
+
+
+def get_spec_prompt(
+    user_input: str,
+    template_dir: Optional[Path],
+    max_prompt_tokens: Optional[int] = None,
+) -> str:
+    """
+    Generate specification creation prompt.
+
+    Loads `spec-template.md` from the selected agent template directory,
+    performs in-memory `$ARGUMENTS` substitution, and trims low-priority
+    sections when input exceeds the prompt token budget.
+    """
+    prompt = SPEC_PROMPT_TEMPLATE.format(user_input=user_input)
+
+    template_content = ""
+    if template_dir is not None:
+        template_path = Path(template_dir) / "spec-template.md"
+        if template_path.exists():
+            template_content = template_path.read_text(encoding="utf-8")
+            template_content = template_content.replace("$ARGUMENTS", user_input)
+            print(f"[OK] Loaded spec template from: {template_path}")
+
+    if template_content:
+        prompt += (
+            "\n\n---\n"
+            "## Required Output Structure\n\n"
+            "You MUST follow this exact template for your output.\n"
+            "Replace every placeholder with real content.\n"
+            "Return only markdown content.\n\n"
+            "```markdown\n"
+            f"{template_content}\n"
+            "```\n"
+        )
+
+    budget = max_prompt_tokens
+    if budget is None:
+        budget = int(os.getenv("SPEC_PROMPT_MAX_TOKENS", str(_DEFAULT_SPEC_PROMPT_MAX_TOKENS)))
+
+    estimated = _estimate_tokens(prompt)
+    if estimated <= budget:
+        return prompt
+
+    if template_content:
+        compact_template = _extract_template_main_sections(template_content)
+        compact_prompt = SPEC_PROMPT_TEMPLATE.format(user_input=user_input) + (
+            "\n\n---\n"
+            "## Required Output Structure (Compacted for token budget)\n\n"
+            "Follow this exact structure and fill placeholders with concrete values.\n\n"
+            "```markdown\n"
+            f"{compact_template}\n"
+            "```\n"
+        )
+        compact_estimated = _estimate_tokens(compact_prompt)
+        if compact_estimated <= budget:
+            print(
+                "[WARN] Spec prompt exceeded token budget; "
+                "using compact template view to stay within limits."
+            )
+            return compact_prompt
+
+    # Final fallback keeps user input intact and provides minimum template instruction.
+    print(
+        "[WARN] Spec prompt still above token budget after compaction; "
+        "falling back to concise prompt while preserving user intent."
+    )
+    return (
+        SPEC_PROMPT_TEMPLATE.format(user_input=user_input)
+        + "\n\nUse the standard spec template structure with all mandatory sections."
+    )
+
+
 def get_plan_prompt(
     constitution: str,
     spec: str,
@@ -667,10 +791,15 @@ def get_tasks_prompt(
     spec: str,
     plan: str,
     template_dir: Optional[Path] = None,
+    research: str = "",
+    data_model: str = "",
+    contracts: str = "",
 ) -> str:
     """
     Generate tasks creation prompt.
 
+    Includes all plan-phase companion documents (research, data-model, contracts)
+    as context when provided — matching the tasks-template.md Prerequisites.
     If template_dir is provided and contains tasks-template.md, the template
     is appended so the agent uses it as the required output structure.
     """
@@ -679,6 +808,24 @@ def get_tasks_prompt(
         spec=spec,
         plan=plan,
     )
+
+    # Append companion docs declared as Prerequisites in tasks-template.md
+    companion_sections: List[str] = []
+    if research:
+        companion_sections.append(f"**Research (research.md)**:\n{research}")
+    if data_model:
+        companion_sections.append(f"**Data Model (data-model.md)**:\n{data_model}")
+    if contracts:
+        companion_sections.append(f"**API Contracts (contracts.md)**:\n{contracts}")
+
+    if companion_sections:
+        prompt += (
+            "\n\n---\n"
+            "## Plan-Phase Documents\n\n"
+            "The following documents were generated during the plan phase. "
+            "Use them to derive tasks that align with the defined entities, endpoints, and structure.\n\n"
+            + "\n\n".join(companion_sections)
+        )
 
     if template_dir is not None:
         template_path = Path(template_dir) / "tasks-template.md"
@@ -701,18 +848,49 @@ def get_tasks_prompt(
     return prompt
 
 
-def get_implement_prompt(constitution: str, spec: str, plan: str, tasks: str) -> str:
-    """Generate implementation prompt."""
+def get_implement_prompt(
+    constitution: str,
+    spec: str,
+    plan: str,
+    tasks: str,
+    research: str = "",
+    data_model: str = "",
+    quickstart: str = "",
+    contracts: str = "",
+) -> str:
+    """Generate implementation prompt, including all plan-phase companion docs as context."""
     # Extract constitution principles for checks
     constitution_checks = _extract_constitution_checks(constitution)
     
-    return IMPLEMENT_PROMPT_TEMPLATE.format(
+    prompt = IMPLEMENT_PROMPT_TEMPLATE.format(
         constitution=constitution,
         spec=spec,
         plan=plan,
         tasks=tasks,
         constitution_checks=constitution_checks
     )
+
+    # Append companion docs so the implementer knows the exact entities, contracts, and setup
+    companion_sections: List[str] = []
+    if research:
+        companion_sections.append(f"**Research (research.md)**:\n{research}")
+    if data_model:
+        companion_sections.append(f"**Data Model (data-model.md)**:\n{data_model}")
+    if contracts:
+        companion_sections.append(f"**API Contracts (contracts.md)**:\n{contracts}")
+    if quickstart:
+        companion_sections.append(f"**Quickstart (quickstart.md)**:\n{quickstart}")
+
+    if companion_sections:
+        prompt += (
+            "\n\n---\n"
+            "## Plan-Phase Documents\n\n"
+            "Implement precisely to these specifications — entities, endpoint signatures, "
+            "and file paths must match exactly.\n\n"
+            + "\n\n".join(companion_sections)
+        )
+
+    return prompt
 
 
 # ---------------------------------------------------------------------------
@@ -862,9 +1040,13 @@ def get_implement_single_task_prompt(
     plan: str,
     tasks: str,
     task_item: Dict[str, str],
+    research: str = "",
+    data_model: str = "",
+    quickstart: str = "",
+    contracts: str = "",
 ) -> str:
     """Generate a focused prompt to implement a single task/file."""
-    return IMPLEMENT_SINGLE_TASK_PROMPT_TEMPLATE.format(
+    prompt = IMPLEMENT_SINGLE_TASK_PROMPT_TEMPLATE.format(
         constitution=constitution,
         spec=spec,
         plan=plan,
@@ -874,6 +1056,27 @@ def get_implement_single_task_prompt(
         file_path=task_item["file_path"],
         language=task_item.get("language", ""),
     )
+
+    # Append companion docs so the implementer has exact entity shapes and contracts
+    companion_sections: List[str] = []
+    if research:
+        companion_sections.append(f"**Research (research.md)**:\n{research}")
+    if data_model:
+        companion_sections.append(f"**Data Model (data-model.md)**:\n{data_model}")
+    if contracts:
+        companion_sections.append(f"**API Contracts (contracts.md)**:\n{contracts}")
+    if quickstart:
+        companion_sections.append(f"**Quickstart (quickstart.md)**:\n{quickstart}")
+
+    if companion_sections:
+        prompt += (
+            "\n\n---\n"
+            "## Plan-Phase Documents (reference for this task)\n\n"
+            "Implement precisely to these specifications.\n\n"
+            + "\n\n".join(companion_sections)
+        )
+
+    return prompt
 
 
 def get_research_prompt(tech_stack: str, spec: str) -> str:
@@ -889,6 +1092,114 @@ def get_data_model_prompt(spec: str, plan: str) -> str:
     return DATA_MODEL_PROMPT_TEMPLATE.format(
         spec=spec,
         plan=plan
+    )
+
+
+QUICKSTART_PROMPT_TEMPLATE = """You are generating a developer quickstart guide for a feature.
+
+## Context
+
+**Constitution**:
+{constitution}
+
+**Feature Specification**:
+{spec}
+
+**Implementation Plan**:
+{plan}
+
+## Your Task
+
+Generate a concise `quickstart.md` that a developer can follow to set up and run the project.
+
+Include:
+
+### 1. Prerequisites
+List all tools, versions, and accounts needed before starting.
+
+### 2. Setup
+Step-by-step commands from `git clone` to running the project locally.
+Include environment variable setup (`.env.example` values).
+
+### 3. Key Commands
+A quick-reference table of the most common development commands (run, test, lint, build).
+
+### 4. Project Layout
+One-paragraph description of the top-level directory structure from the plan.
+
+### 5. Verification
+Commands to confirm the setup is working (e.g., `curl` a health endpoint, run the test suite).
+
+## Output Format
+
+Provide the COMPLETE quickstart.md content.
+Start immediately with `# Quickstart` — no meta-commentary.
+Use fenced code blocks for all commands.
+"""
+
+CONTRACTS_PROMPT_TEMPLATE = """You are generating the API contract documentation for a feature.
+
+## Context
+
+**Constitution**:
+{constitution}
+
+**Feature Specification**:
+{spec}
+
+**Implementation Plan**:
+{plan}
+
+## Your Task
+
+Generate a `contracts.md` that defines every API boundary in the feature.
+
+For each endpoint / interface:
+
+### Endpoint format
+
+#### `METHOD /path`
+- **Description**: One sentence.
+- **Auth**: Required / None / API key
+- **Request**:
+  ```json
+  {{ "field": "type — description" }}
+  ```
+- **Response 200**:
+  ```json
+  {{ "field": "type — description" }}
+  ```
+- **Error responses**: List status codes and their meaning.
+
+Cover:
+1. All HTTP endpoints from the spec
+2. Any event or message schemas (queues, websockets) if applicable
+3. CLI argument contracts if the project has a CLI
+4. Shared error envelope format
+
+## Output Format
+
+Provide the COMPLETE contracts.md content.
+Start immediately with `# API Contracts` — no meta-commentary.
+List every endpoint; do not omit any from the spec.
+"""
+
+
+def get_quickstart_prompt(constitution: str, spec: str, plan: str) -> str:
+    """Generate quickstart guide prompt."""
+    return QUICKSTART_PROMPT_TEMPLATE.format(
+        constitution=constitution,
+        spec=spec,
+        plan=plan,
+    )
+
+
+def get_contracts_prompt(constitution: str, spec: str, plan: str) -> str:
+    """Generate API contracts prompt."""
+    return CONTRACTS_PROMPT_TEMPLATE.format(
+        constitution=constitution,
+        spec=spec,
+        plan=plan,
     )
 
 

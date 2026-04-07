@@ -5,11 +5,12 @@ This example demonstrates how to use the Microsoft Agent Framework-based
 workflow with human-in-the-loop approval gate.
 
 The workflow will:
-1. Load context (constitution.md, spec.md)
-2. Generate implementation plan
-3. Generate task breakdown
-4. **PAUSE for human approval** - You review tasks.md and approve/reject
-5. Generate implementation code (only if approved)
+1. Load context (constitution.md and output/spec/spec.md)
+2. If output/spec/spec.md is missing, ask what to build and generate it
+3. Generate implementation plan
+4. Generate task breakdown
+5. **PAUSE for human approval** - You review output/spec/tasks.md and approve/reject
+6. Generate implementation code (only if approved)
 
 Usage:
     python workflow_example.py [base_dir] [agent_type] [tech_stack]
@@ -59,24 +60,24 @@ async def main():
         print(f"\n[ERROR] Error: Base directory not found: {base_dir}")
         print("Please create the directory and add:")
         print("  - constitution.md (coding standards and principles)")
-        print("  - spec.md (feature specification)")
+        print("  - constitution.md (coding standards and principles)")
+        print("  - output/spec/spec.md (optional; auto-generated if missing)")
         return 1
     
     # Verify required files exist
     
     constitution_file = base_path / "constitution.md"
-    spec_file = base_path / "spec.md"
+    spec_file = base_path / "output" / "spec" / "spec.md"
     
     if not constitution_file.exists():
         print(f"\n[ERROR] constitution.md not found in {base_dir}")
         return 1
     
-    if not spec_file.exists():
-        print(f"\n[ERROR] spec.md not found in {base_dir}")
-        return 1
-    
     print(f"\n[OK] Found constitution.md")
-    print(f"[OK] Found spec.md")
+    if spec_file.exists():
+        print(f"[OK] Found output/spec/spec.md")
+    else:
+        print("[INFO] output/spec/spec.md not found - workflow will generate it interactively")
     
     # Create orchestrator (auto-detect agent type from directory name)
     orchestrator = SpecOrchestrator(base_dir=base_dir, agent_type=agent_type)
@@ -91,7 +92,7 @@ async def main():
             print("STARTING WORKFLOW")
             print("="*70)
             print("\nThe workflow will pause after generating tasks.")
-            print("You will be asked to review tasks.md and approve before implementation.")
+            print("You will be asked to review output/spec/tasks.md and approve before implementation.")
             print("\nPress Ctrl+C at any time to cancel.")
             print("="*70)
             
@@ -113,7 +114,7 @@ async def main():
                 print("="*70)
                 print("\nThe workflow was cancelled during the approval gate.")
                 print("No implementation files were generated.")
-                print(f"\nGenerated artifacts (in {base_path}):")
+                print(f"\nGenerated artifacts (in {base_path / 'output' / 'spec'}):")
                 print("  - plan.md (implementation plan)")
                 print("  - tasks.md (task breakdown)")
                 print("\n" + "="*70)
@@ -124,20 +125,20 @@ async def main():
             print("SUCCESS!")
             print("="*70)
             print(f"\n[OK] Generated {result['file_count']} code files")
-            print(f"\nMarkdown files: {base_path}")
-            print(f"Code files: {base_path / 'outputs'}")
+            print(f"\nMarkdown files: {base_path / 'output' / 'spec'}")
+            print(f"Code files: {base_path / 'output' / 'code'}")
             print("\nGenerated files:")
             for file_path in result['generated_files']:
                 print(f"  - {file_path}")
             
             print("\nGenerated artifacts:")
-            print("  - plan.md (implementation plan)")
-            print("  - tasks.md (task breakdown)")
-            print("  - implementation.md (full implementation)")
+            print("  - output/spec/plan.md (implementation plan)")
+            print("  - output/spec/tasks.md (task breakdown)")
+            print("  - output/spec/implementation.md (full implementation)")
             if result['file_count'] > 0:
-                print(f"  - outputs/ ({result['file_count']} code files extracted)")
+                print(f"  - output/code/ ({result['file_count']} code files extracted)")
             else:
-                print("  - outputs/ (no code files extracted - check tasks.md format)")
+                print("  - output/code/ (no code files extracted - check tasks.md format)")
             
             print("\n" + "="*70)
             print("You can now review and test the generated code!")

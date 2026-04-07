@@ -14,7 +14,7 @@ async def test_agent(agent_type: str, output_file: Path):
     # Read spec files
     base_dir = Path("co-pilot")
     constitution = (base_dir / "constitution.md").read_text(encoding='utf-8')
-    spec = (base_dir / "spec.md").read_text(encoding='utf-8')
+    spec = (base_dir / "output" / "spec" / "spec.md").read_text(encoding='utf-8')
     
     print(f"✓ Loaded constitution ({len(constitution)} chars)")
     print(f"✓ Loaded spec ({len(spec)} chars)")

@@ -18,6 +18,8 @@ Based on Microsoft Agent Framework documentation:
 """
 
 import asyncio
+import json
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional, Dict, Any, List, Union
@@ -35,12 +37,17 @@ from agent_framework import (
 from code_generator import CodeGenerator
 from context_providers import AnthropicCommandProvider, CopilotCommandProvider
 from spec_templates import (
+    get_spec_prompt,
     get_plan_prompt,
     get_tasks_prompt,
     get_implement_prompt,
     get_template_dir,
     parse_task_items,
     get_implement_single_task_prompt,
+    get_research_prompt,
+    get_data_model_prompt,
+    get_quickstart_prompt,
+    get_contracts_prompt,
 )
 
 
@@ -51,6 +58,11 @@ class ContextData:
     spec: str
     base_dir: Path
     tech_stack: str = "Python 3.10+"
+    # Plan-phase companion documents (populated by GeneratePlanExecutor)
+    research: str = ""
+    data_model: str = ""
+    quickstart: str = ""
+    contracts: str = ""
 
 
 @dataclass
@@ -86,7 +98,185 @@ class ImplementationData:
     file_count: int
 
 
-class LoadAndRouteExecutor(Executor):
+@dataclass
+class ArtifactPaths:
+    """Resolved output paths for generated workflow artifacts."""
+    output_root: Path
+    spec_dir: Path
+    code_dir: Path
+    spec_file: Path
+    plan_file: Path
+    tasks_file: Path
+    implementation_file: Path
+    assumptions_file: Path
+    # Plan-phase companion outputs
+    research_file: Path
+    data_model_file: Path
+    quickstart_file: Path
+    contracts_file: Path
+
+
+def _resolve_artifact_paths(base_path: Path) -> ArtifactPaths:
+    """Build canonical output paths for generated artifacts."""
+    output_root = base_path / "output"
+    spec_dir = output_root / "spec"
+    code_dir = output_root / "code"
+    return ArtifactPaths(
+        output_root=output_root,
+        spec_dir=spec_dir,
+        code_dir=code_dir,
+        spec_file=spec_dir / "spec.md",
+        plan_file=spec_dir / "plan.md",
+        tasks_file=spec_dir / "tasks.md",
+        implementation_file=spec_dir / "implementation.md",
+        assumptions_file=spec_dir / "assumptions.md",
+        research_file=spec_dir / "research.md",
+        data_model_file=spec_dir / "data-model.md",
+        quickstart_file=spec_dir / "quickstart.md",
+        contracts_file=spec_dir / "contracts.md",
+    )
+
+
+def _make_provider(agent_type: str):
+    """Return the matching command context provider for the given agent type."""
+    return AnthropicCommandProvider() if agent_type == "claude" else CopilotCommandProvider()
+
+
+# ---------------------------------------------------------------------------
+# Shared helpers — used by both workflow executors and spec_orchestrator.py
+# ---------------------------------------------------------------------------
+
+def _extract_clarification_markers(spec_text: str) -> List[str]:
+    """Return all unique NEEDS CLARIFICATION markers in appearance order."""
+    seen: set = set()
+    markers: List[str] = []
+    for marker in re.findall(r"\[NEEDS CLARIFICATION:(.*?)\]", spec_text, flags=re.IGNORECASE):
+        question = marker.strip()
+        if question and question not in seen:
+            seen.add(question)
+            markers.append(question)
+    return markers
+
+
+def _replace_clarification(spec_text: str, question: str, answer: str) -> str:
+    """Replace one clarification marker with the supplied answer."""
+    pattern = re.compile(
+        r"\[NEEDS CLARIFICATION:\s*" + re.escape(question) + r"\s*\]",
+        flags=re.IGNORECASE,
+    )
+    return pattern.sub(answer.strip(), spec_text, count=1)
+
+
+def _format_assumptions_markdown(assumptions_log: List[Dict[str, str]]) -> str:
+    """Format assumption records into a markdown document."""
+    lines = [
+        "# Assumptions",
+        "",
+        "Generated after unresolved clarification items persisted beyond iterative Q&A rounds.",
+        "",
+    ]
+    for idx, item in enumerate(assumptions_log, 1):
+        lines.extend([
+            f"## A{idx:03d}",
+            f"- Question: {item['question']}",
+            f"- Assumption: {item['assumption']}",
+            f"- Rationale: {item['rationale']}",
+            "",
+        ])
+    return "\n".join(lines)
+
+
+async def _generate_assumptions(
+    code_generator: "CodeGenerator",
+    spec_text: str,
+    unresolved_questions: List[str],
+) -> Dict[str, str]:
+    """Generate meaningful assumptions for unresolved clarification questions."""
+    numbered = "\n".join(f"{idx + 1}. {q}" for idx, q in enumerate(unresolved_questions))
+    prompt = f"""You are helping finalize a product specification.
+
+Given this spec:
+{spec_text}
+
+Unresolved clarification questions:
+{numbered}
+
+Provide meaningful assumptions for each unresolved item.
+Return STRICT JSON only with this structure:
+{{
+  "assumptions": [
+    {{"question": "...", "assumption": "...", "rationale": "..."}}
+  ]
+}}""".strip()
+    raw = await code_generator.generate(prompt)
+    try:
+        start = raw.find("{")
+        end = raw.rfind("}")
+        payload = json.loads(raw[start:end + 1])
+        assumptions: Dict[str, str] = {}
+        for item in payload.get("assumptions", []):
+            question = str(item.get("question", "")).strip()
+            assumption = str(item.get("assumption", "")).strip()
+            if question and assumption:
+                assumptions[question] = assumption
+        if assumptions:
+            return assumptions
+    except Exception:
+        pass
+    return {q: f"Assume a standard, business-safe default for: {q}." for q in unresolved_questions}
+
+
+def _extract_code_blocks(markdown_content: str) -> List[Dict[str, str]]:
+    """Extract fenced code blocks from markdown, returning language, filename, and code."""
+    code_blocks = []
+    lines = markdown_content.split('\n')
+    i = 0
+    while i < len(lines):
+        line = lines[i].strip()
+        if line.startswith('```'):
+            lang = line[3:].strip()
+            filename = None
+            if i > 0:
+                prev_line = lines[i - 1].strip()
+                if prev_line.startswith('**File**:') or prev_line.startswith('File:'):
+                    filename = prev_line.split(':', 1)[1].strip()
+            code_lines = []
+            i += 1
+            while i < len(lines) and not lines[i].strip().startswith('```'):
+                code_lines.append(lines[i])
+                i += 1
+            code_blocks.append({'language': lang, 'filename': filename, 'code': '\n'.join(code_lines)})
+        i += 1
+    return code_blocks
+
+
+# ---------------------------------------------------------------------------
+# Base executor — shared CodeGenerator lifecycle for all workflow executors
+# ---------------------------------------------------------------------------
+
+class _AgentExecutor(Executor):
+    """Provides shared CodeGenerator init and teardown. All workflow executors extend this."""
+
+    def __init__(self, agent_type: str, id: str):
+        super().__init__(id=id)
+        self.agent_type = agent_type
+        self.code_generator: Optional[CodeGenerator] = None
+
+    async def _ensure_generator(self) -> None:
+        """Lazily initialize the CodeGenerator on first use."""
+        if self.code_generator is None:
+            self.code_generator = CodeGenerator(
+                agent_type=self.agent_type,
+                context_provider=_make_provider(self.agent_type),
+            )
+            await self.code_generator._ensure_started()
+
+    async def cleanup(self) -> None:
+        if self.code_generator:
+            await self.code_generator.close()
+
+
+class LoadAndRouteExecutor(_AgentExecutor):
     """
     Entry-point executor that loads context files and routes the workflow
     to the appropriate phase based on which files already exist:
@@ -96,8 +286,82 @@ class LoadAndRouteExecutor(Executor):
     - Both plan.md and tasks.md exist     → skip straight to code generation (no approval needed)
     """
 
-    def __init__(self, id: str = "load_context"):
-        super().__init__(id=id)
+    def __init__(self, agent_type: str, id: str = "load_context"):
+        super().__init__(agent_type, id)
+
+    async def _generate_spec(self, paths: ArtifactPaths, user_input: str) -> str:
+        """Generate a spec document from user input using the selected agent template."""
+        await self._ensure_generator()
+        prompt = get_spec_prompt(
+            user_input=user_input,
+            template_dir=get_template_dir(self.agent_type),
+        )
+        print("\n[...] Generating specification from user input...")
+        spec_text = await self.code_generator.generate_spec(prompt)
+        if not spec_text.strip():
+            raise RuntimeError("Generated spec content is empty")
+        paths.spec_dir.mkdir(parents=True, exist_ok=True)
+        paths.spec_file.write_text(spec_text, encoding="utf-8")
+        print(f"[OK] Spec generated and saved to: {paths.spec_file}")
+        return spec_text
+
+    async def _resolve_spec_clarifications(
+        self,
+        paths: ArtifactPaths,
+        spec_text: str,
+    ) -> str:
+        """
+        Resolve clarification markers via terminal Q&A.
+
+        Targets ~3 interactive rounds; after that, fills remaining markers using
+        generated assumptions and asks for explicit user approval.
+        """
+        round_number = 1
+        assumptions_log: List[Dict[str, str]] = []
+
+        while True:
+            markers = _extract_clarification_markers(spec_text)
+            if not markers:
+                break
+
+            print(f"\n[CLARIFY] Round {round_number}: {len(markers)} open clarification items")
+            if round_number <= 3:
+                for question in markers:
+                    print(f"\n[QUESTION] {question}")
+                    answer = input("Answer (leave blank to defer): ").strip()
+                    if answer:
+                        spec_text = _replace_clarification(spec_text, question, answer)
+            else:
+                print("\n[INFO] Clarification round target exceeded; generating assumptions for unresolved items...")
+                await self._ensure_generator()
+                assumptions = await _generate_assumptions(self.code_generator, spec_text, markers)
+                for question in markers:
+                    assumption = assumptions.get(question, f"Assume standard default: {question}")
+                    spec_text = _replace_clarification(spec_text, question, assumption)
+                    assumptions_log.append({
+                        "question": question,
+                        "assumption": assumption,
+                        "rationale": "Applied after iterative clarification rounds to unblock planning.",
+                    })
+                break
+
+            round_number += 1
+
+        paths.spec_file.write_text(spec_text, encoding="utf-8")
+
+        if assumptions_log:
+            paths.assumptions_file.write_text(_format_assumptions_markdown(assumptions_log), encoding="utf-8")
+            print(f"[OK] Assumptions recorded at: {paths.assumptions_file}")
+            print("\n[APPROVAL REQUIRED] Review assumptions before planning:")
+            while True:
+                approve = input("Approve assumptions? (yes/no): ").strip().lower()
+                if approve in {"yes", "y"}:
+                    break
+                if approve in {"no", "n"}:
+                    raise RuntimeError("Workflow cancelled: assumptions were rejected by user")
+                print("Please enter 'yes' or 'no'")
+
+        return spec_text
 
     @handler
     async def load(
@@ -120,6 +384,9 @@ class LoadAndRouteExecutor(Executor):
         print("PHASE 1: Loading Context")
         print(f"{'='*60}")
         print(f"Base Directory: {base_path}")
+        paths = _resolve_artifact_paths(base_path)
+        paths.spec_dir.mkdir(parents=True, exist_ok=True)
+        paths.code_dir.mkdir(parents=True, exist_ok=True)
 
         # Read constitution
         constitution_path = base_path / "constitution.md"
@@ -128,30 +395,48 @@ class LoadAndRouteExecutor(Executor):
         constitution = constitution_path.read_text(encoding='utf-8')
         print(f"[OK] Loaded constitution ({len(constitution)} chars)")
 
-        # Read spec
-        spec_path = base_path / "spec.md"
-        if not spec_path.exists():
-            raise FileNotFoundError(f"Spec not found: {spec_path}")
-        spec = spec_path.read_text(encoding='utf-8')
-        print(f"[OK] Loaded specification ({len(spec)} chars)")
+        # Load or generate spec from output/spec/spec.md
+        spec_is_new = not paths.spec_file.exists()
+        if spec_is_new:
+            print(f"[INFO] Spec not found at: {paths.spec_file}")
+            user_input = ""
+            while not user_input.strip():
+                user_input = input("Describe what you want to build: ").strip()
+                if not user_input:
+                    print("Please provide a non-empty feature description.")
+            spec = await self._generate_spec(paths, user_input)
+        else:
+            spec = paths.spec_file.read_text(encoding="utf-8")
+            print(f"[OK] Loaded specification ({len(spec)} chars) from: {paths.spec_file}")
 
-        # Build base context (always needed)
+        spec = await self._resolve_spec_clarifications(paths, spec)
+        print(f"[OK] Specification ready ({len(spec)} chars)")
+
+        # Build base context; load plan-phase companion docs from disk if present
         context_data = ContextData(
             constitution=constitution,
             spec=spec,
             base_dir=base_path,
-            tech_stack=tech_stack
+            tech_stack=tech_stack,
+            research=paths.research_file.read_text(encoding="utf-8") if paths.research_file.exists() else "",
+            data_model=paths.data_model_file.read_text(encoding="utf-8") if paths.data_model_file.exists() else "",
+            quickstart=paths.quickstart_file.read_text(encoding="utf-8") if paths.quickstart_file.exists() else "",
+            contracts=paths.contracts_file.read_text(encoding="utf-8") if paths.contracts_file.exists() else "",
         )
 
-        plan_path = base_path / "plan.md"
-        tasks_path = base_path / "tasks.md"
-        plan_exists = plan_path.exists()
-        tasks_exists = tasks_path.exists()
+        # When spec was just created, force full plan/tasks regeneration
+        if spec_is_new:
+            print("[INFO] Spec was generated this run — forcing plan/tasks regeneration.")
+            plan_exists = False
+            tasks_exists = False
+        else:
+            plan_exists = paths.plan_file.exists()
+            tasks_exists = paths.tasks_file.exists()
 
         if plan_exists and tasks_exists:
             # ── RESUME: both files present → skip straight to code generation ──
-            plan = plan_path.read_text(encoding='utf-8')
-            tasks = tasks_path.read_text(encoding='utf-8')
+            plan = paths.plan_file.read_text(encoding='utf-8')
+            tasks = paths.tasks_file.read_text(encoding='utf-8')
             task_count = tasks.count('- [ ] T')
             print(f"[RESUME] Found existing plan.md ({len(plan)} chars) and tasks.md ({len(tasks)} chars)")
             print(f"[RESUME] {task_count} tasks detected — skipping plan/task generation and approval")
@@ -166,7 +451,7 @@ class LoadAndRouteExecutor(Executor):
 
         elif plan_exists:
             # ── RESUME: plan exists but no tasks → generate tasks then approve ──
-            plan = plan_path.read_text(encoding='utf-8')
+            plan = paths.plan_file.read_text(encoding='utf-8')
             print(f"[RESUME] Found existing plan.md ({len(plan)} chars) — skipping plan generation")
             print(f"[RESUME] Proceeding to task generation...")
             plan_data = PlanData(
@@ -181,31 +466,12 @@ class LoadAndRouteExecutor(Executor):
             print("[INFO] No existing plan or tasks found — starting full workflow")
             await ctx.send_message(context_data)
 
+class GeneratePlanExecutor(_AgentExecutor):
+    """Executor that generates the implementation plan using CodeGenerator."""
 
-def _make_provider(agent_type: str):
-    """Return the matching command context provider for the given agent type."""
-    return AnthropicCommandProvider() if agent_type == "claude" else CopilotCommandProvider()
-
-
-class GeneratePlanExecutor(Executor):
-    """
-    Executor that generates the implementation plan using CodeGenerator.
-    """
-    
     def __init__(self, agent_type: str, id: str = "generate_plan"):
-        super().__init__(id=id)
-        self.agent_type = agent_type
-        self.code_generator: Optional[CodeGenerator] = None
-    
-    async def _ensure_generator(self):
-        """Initialize code generator if not already started."""
-        if self.code_generator is None:
-            self.code_generator = CodeGenerator(
-                agent_type=self.agent_type,
-                context_provider=_make_provider(self.agent_type),
-            )
-            await self.code_generator._ensure_started()
-    
+        super().__init__(agent_type, id)
+
     @handler
     async def generate_plan(
         self,
@@ -243,44 +509,85 @@ class GeneratePlanExecutor(Executor):
         plan = await self.code_generator.generate_plan(prompt)
         
         print(f"[OK] Plan generated ({len(plan)} chars)")
-        
-        # Save plan to file (same directory as spec.md)
-        plan_file = context.base_dir / "plan.md"
-        plan_file.write_text(plan, encoding='utf-8')
-        print(f"[OK] Plan saved to: {plan_file}")
-        
-        # Send plan data with full context to next executor
-        plan_data = PlanData(plan=plan, tech_stack=tech_stack, context=context)
+
+        # Save generated plan under output/spec
+        paths = _resolve_artifact_paths(context.base_dir)
+        paths.spec_dir.mkdir(parents=True, exist_ok=True)
+        paths.plan_file.write_text(plan, encoding='utf-8')
+        print(f"[OK] Plan saved to: {paths.plan_file}")
+
+        # Generate all plan-phase companion documents
+        updated_context = await self._generate_plan_phase_docs(context, paths, plan)
+
+        # Send plan data with enriched context to next executor
+        plan_data = PlanData(plan=plan, tech_stack=tech_stack, context=updated_context)
         await ctx.send_message(plan_data)
-    
-    async def cleanup(self):
-        """Cleanup code generator on executor shutdown."""
-        if self.code_generator:
-            await self.code_generator.close()
+
+    async def _generate_plan_phase_docs(
+        self,
+        context: ContextData,
+        paths: ArtifactPaths,
+        plan: str,
+    ) -> ContextData:
+        """Generate research, data-model, quickstart, and contracts alongside plan.md."""
+        print(f"\n{'='*60}")
+        print("PHASE 2 (companion): Plan-Phase Documents")
+        print(f"{'='*60}")
+
+        # Research (Phase 0 — uses spec + tech_stack)
+        print("\n[...] Generating research.md...")
+        research = await self.code_generator.generate(
+            get_research_prompt(context.tech_stack, context.spec)
+        )
+        paths.research_file.write_text(research, encoding="utf-8")
+        print(f"[OK] Research saved to: {paths.research_file}")
+
+        # Data model (uses spec + plan)
+        print("\n[...] Generating data-model.md...")
+        data_model = await self.code_generator.generate(
+            get_data_model_prompt(context.spec, plan)
+        )
+        paths.data_model_file.write_text(data_model, encoding="utf-8")
+        print(f"[OK] Data model saved to: {paths.data_model_file}")
+
+        # Quickstart (uses constitution + spec + plan)
+        print("\n[...] Generating quickstart.md...")
+        quickstart = await self.code_generator.generate(
+            get_quickstart_prompt(context.constitution, context.spec, plan)
+        )
+        paths.quickstart_file.write_text(quickstart, encoding="utf-8")
+        print(f"[OK] Quickstart saved to: {paths.quickstart_file}")
+
+        # API contracts (uses constitution + spec + plan)
+        print("\n[...] Generating contracts.md...")
+        contracts = await self.code_generator.generate(
+            get_contracts_prompt(context.constitution, context.spec, plan)
+        )
+        paths.contracts_file.write_text(contracts, encoding="utf-8")
+        print(f"[OK] Contracts saved to: {paths.contracts_file}")
+
+        # Return a new ContextData with all companion docs attached
+        from dataclasses import replace as dc_replace
+        return dc_replace(
+            context,
+            research=research,
+            data_model=data_model,
+            quickstart=quickstart,
+            contracts=contracts,
+        )
 
 
-class GenerateTasksExecutor(Executor):
+class GenerateTasksExecutor(_AgentExecutor):
     """
     Executor that generates task breakdown and requests human approval.
-    
+
     This executor implements the human-in-the-loop approval gate.
     """
-    
+
     def __init__(self, agent_type: str, id: str = "generate_tasks"):
-        super().__init__(id=id)
-        self.agent_type = agent_type
-        self.code_generator: Optional[CodeGenerator] = None
-        self._tasks_data: Optional[TasksData] = None  # Store for approval response
-    
-    async def _ensure_generator(self):
-        """Initialize code generator if not already started."""
-        if self.code_generator is None:
-            self.code_generator = CodeGenerator(
-                agent_type=self.agent_type,
-                context_provider=_make_provider(self.agent_type),
-            )
-            await self.code_generator._ensure_started()
-    
+        super().__init__(agent_type, id)
+        self._tasks_data: Optional[TasksData] = None
+
     @handler
     async def generate_tasks(
         self,
@@ -304,12 +611,15 @@ class GenerateTasksExecutor(Executor):
         print(f"{'='*60}")
         print(f"Agent: {self.agent_type}")
         
-        # Generate prompt
+        # Generate prompt — include all plan-phase companion docs as context
         prompt = get_tasks_prompt(
             context.constitution,
             context.spec,
             plan_data.plan,
             template_dir=get_template_dir(self.agent_type),
+            research=context.research,
+            data_model=context.data_model,
+            contracts=context.contracts,
         )
 
         # Generate tasks
@@ -320,8 +630,9 @@ class GenerateTasksExecutor(Executor):
         task_count = tasks.count('- [ ] T')
         print(f"[OK] Generated {task_count} tasks ({len(tasks)} chars)")
         
-        # Save tasks to file (same directory as spec.md)
-        tasks_file = context.base_dir / "tasks.md"
+        # Save generated tasks under output/spec
+        tasks_file = _resolve_artifact_paths(context.base_dir).tasks_file
+        tasks_file.parent.mkdir(parents=True, exist_ok=True)
         tasks_file.write_text(tasks, encoding='utf-8')
         print(f"[OK] Tasks saved to: {tasks_file}")
         
@@ -340,7 +651,7 @@ class GenerateTasksExecutor(Executor):
             tasks_preview += "\n... (truncated)"
         
         approval_request = ApprovalRequest(
-            message=f"Generated {task_count} tasks. Please review tasks.md and approve to proceed with implementation.",
+            message=f"Generated {task_count} tasks. Please review output/spec/tasks.md and approve to proceed with implementation.",
             tasks_preview=tasks_preview,
             task_count=task_count
         )
@@ -387,33 +698,16 @@ class GenerateTasksExecutor(Executor):
             await ctx.yield_output("Workflow cancelled by user")
             # Note: The workflow will complete when there's no more work
     
-    async def cleanup(self):
-        """Cleanup code generator on executor shutdown."""
-        if self.code_generator:
-            await self.code_generator.close()
-
-
-class ExecuteImplementationExecutor(Executor):
+class ExecuteImplementationExecutor(_AgentExecutor):
     """
     Executor that generates the final implementation code.
-    
+
     This executor runs only after human approval.
     """
-    
+
     def __init__(self, agent_type: str, id: str = "execute_implementation"):
-        super().__init__(id=id)
-        self.agent_type = agent_type
-        self.code_generator: Optional[CodeGenerator] = None
-    
-    async def _ensure_generator(self):
-        """Initialize code generator if not already started."""
-        if self.code_generator is None:
-            self.code_generator = CodeGenerator(
-                agent_type=self.agent_type,
-                context_provider=_make_provider(self.agent_type),
-            )
-            await self.code_generator._ensure_started()
-    
+        super().__init__(agent_type, id)
+
     @handler
     async def run_implementation(
         self,
@@ -439,9 +733,9 @@ class ExecuteImplementationExecutor(Executor):
         print(f"{'='*60}")
         print(f"Agent: {self.agent_type}")
 
-        # Create outputs directory for code files
-        outputs_dir = context.base_dir / "outputs"
-        outputs_dir.mkdir(parents=True, exist_ok=True)
+        # Create output directory for generated code files
+        paths = _resolve_artifact_paths(context.base_dir)
+        paths.code_dir.mkdir(parents=True, exist_ok=True)
 
         # Parse tasks into individual file-level items
         task_items = parse_task_items(tasks)
@@ -460,6 +754,10 @@ class ExecuteImplementationExecutor(Executor):
                 plan,
                 tasks,
                 task_item,
+                research=context.research,
+                data_model=context.data_model,
+                quickstart=context.quickstart,
+                contracts=context.contracts,
             )
 
             try:
@@ -471,13 +769,13 @@ class ExecuteImplementationExecutor(Executor):
                 # Determine save path from task's declared file_path
                 file_path = Path(task_item["file_path"])
                 if file_path.parent != Path("."):
-                    output_path = outputs_dir / file_path.parent
+                    output_path = paths.code_dir / file_path.parent
                 else:
-                    output_path = outputs_dir / "src"
+                    output_path = paths.code_dir / "src"
                 output_path.mkdir(parents=True, exist_ok=True)
 
                 # Extract first code block from response and write it
-                code_blocks = self._extract_code_blocks(task_impl)
+                code_blocks = _extract_code_blocks(task_impl)
                 if code_blocks:
                     saved_path = output_path / file_path.name
                     saved_path.write_text(code_blocks[0]["code"], encoding="utf-8")
@@ -494,7 +792,8 @@ class ExecuteImplementationExecutor(Executor):
 
         # Save combined implementation log
         implementation = "\n\n---\n\n".join(all_implementations)
-        impl_file = context.base_dir / "implementation.md"
+        impl_file = paths.implementation_file
+        impl_file.parent.mkdir(parents=True, exist_ok=True)
         impl_file.write_text(implementation, encoding="utf-8")
         print(f"\n[OK] Implementation log saved to: {impl_file}")
 
@@ -509,53 +808,6 @@ class ExecuteImplementationExecutor(Executor):
         )
 
         await ctx.yield_output(result)
-    
-    def _extract_code_blocks(self, markdown_content: str) -> List[Dict[str, str]]:
-        """
-        Extract code blocks from markdown content.
-        
-        Returns:
-            List of dicts with 'language', 'filename', 'code' keys
-        """
-        code_blocks = []
-        lines = markdown_content.split('\n')
-        i = 0
-        
-        while i < len(lines):
-            line = lines[i].strip()
-            
-            # Look for code blocks with language and optional filename
-            if line.startswith('```'):
-                lang = line[3:].strip()
-                
-                # Extract filename from previous line if it looks like a file path
-                filename = None
-                if i > 0:
-                    prev_line = lines[i-1].strip()
-                    if prev_line.startswith('**File**:') or prev_line.startswith('File:'):
-                        filename = prev_line.split(':', 1)[1].strip()
-                
-                # Collect code lines
-                code_lines = []
-                i += 1
-                while i < len(lines) and not lines[i].strip().startswith('```'):
-                    code_lines.append(lines[i])
-                    i += 1
-                
-                code_blocks.append({
-                    'language': lang,
-                    'filename': filename,
-                    'code': '\n'.join(code_lines)
-                })
-            
-            i += 1
-        
-        return code_blocks
-    
-    async def cleanup(self):
-        """Cleanup code generator on executor shutdown."""
-        if self.code_generator:
-            await self.code_generator.close()
 
 
 def create_spec_workflow(
@@ -575,7 +827,7 @@ def create_spec_workflow(
         Configured workflow ready to run
     """
     # Create executors
-    load_and_route = LoadAndRouteExecutor()
+    load_and_route = LoadAndRouteExecutor(agent_type=agent_type)
     generate_plan = GeneratePlanExecutor(agent_type=agent_type)
     generate_tasks = GenerateTasksExecutor(agent_type=agent_type)
     execute_implementation = ExecuteImplementationExecutor(agent_type=agent_type)
@@ -776,7 +1028,8 @@ if __name__ == "__main__":
         
         if result:
             print(f"\n[OK] Generated {result.file_count} code files")
-            print(f"[OK] Output directory: {Path(base_dir) / 'outputs'}")
+            print(f"[OK] Spec artifacts: {Path(base_dir) / 'output' / 'spec'}")
+            print(f"[OK] Code output directory: {Path(base_dir) / 'output' / 'code'}")
         else:
             print(f"\n[INFO] Workflow was cancelled. No files were generated.")
     

@@ -432,6 +432,9 @@ def validate_workflow(base_dir: Path) -> Dict[str, any]:
         'overall_valid': True
     }
     
+    constitution: Optional[str] = None
+    spec_dir = base_dir / 'output' / 'spec'
+
     # Validate constitution
     const_path = base_dir / 'constitution.md'
     if const_path.exists():
@@ -447,7 +450,7 @@ def validate_workflow(base_dir: Path) -> Dict[str, any]:
         results['overall_valid'] = False
     
     # Validate spec
-    spec_path = base_dir / 'spec.md'
+    spec_path = spec_dir / 'spec.md'
     if spec_path.exists():
         results['spec'] = {'exists': True}
     else:
@@ -455,7 +458,7 @@ def validate_workflow(base_dir: Path) -> Dict[str, any]:
         results['overall_valid'] = False
     
     # Validate plan
-    plan_path = base_dir / 'outputs' / 'plan.md'
+    plan_path = spec_dir / 'plan.md'
     if plan_path.exists():
         plan = plan_path.read_text(encoding='utf-8')
         results['plan'] = {
@@ -472,7 +475,7 @@ def validate_workflow(base_dir: Path) -> Dict[str, any]:
         results['plan'] = {'exists': False}
     
     # Validate tasks
-    tasks_path = base_dir / 'outputs' / 'tasks.md'
+    tasks_path = spec_dir / 'tasks.md'
     if tasks_path.exists():
         tasks = tasks_path.read_text(encoding='utf-8')
         results['tasks'] = {
@@ -487,7 +490,7 @@ def validate_workflow(base_dir: Path) -> Dict[str, any]:
         results['tasks'] = {'exists': False}
     
     # Validate implementation
-    impl_path = base_dir / 'outputs' / 'implementation.md'
+    impl_path = spec_dir / 'implementation.md'
     if impl_path.exists():
         implementation = impl_path.read_text(encoding='utf-8')
         results['implementation'] = {

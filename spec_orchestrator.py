@@ -15,20 +15,31 @@ from typing import Optional, Dict, Any, List
 from datetime import datetime
 
 from code_generator import CodeGenerator
-from context_providers import AnthropicCommandProvider, CopilotCommandProvider
 from spec_templates import (
+    get_spec_prompt,
     get_plan_prompt,
     get_tasks_prompt,
     get_implement_prompt,
     get_research_prompt,
     get_data_model_prompt,
+    get_quickstart_prompt,
+    get_contracts_prompt,
     get_template_dir,
     parse_task_items,
     get_implement_single_task_prompt,
 )
 
-# Import the Microsoft Agent Framework workflow
-from spec_workflow import run_spec_workflow, ImplementationData
+# Import the Microsoft Agent Framework workflow and shared helpers
+from spec_workflow import (
+    run_spec_workflow,
+    ImplementationData,
+    _make_provider,
+    _extract_clarification_markers,
+    _replace_clarification,
+    _generate_assumptions,
+    _format_assumptions_markdown,
+    _extract_code_blocks,
+)
 
 
 class ContextManager:
@@ -42,12 +53,18 @@ class ContextManager:
             base_dir: Base directory containing constitution.md and spec.md
         """
         self.base_dir = Path(base_dir)
-        # outputs_dir used only for code files, not .md files
-        self.outputs_dir = self.base_dir / "outputs"
+        self.output_root = self.base_dir / "output"
+        self.spec_dir = self.output_root / "spec"
+        self.code_dir = self.output_root / "code"
     
     def read_file(self, filename: str) -> str:
         """Read a file from the base directory."""
-        filepath = self.base_dir / filename
+        if filename == "constitution.md":
+            filepath = self.base_dir / filename
+        elif filename.endswith('.md'):
+            filepath = self.spec_dir / filename
+        else:
+            filepath = self.base_dir / filename
         if not filepath.exists():
             raise FileNotFoundError(f"Required file not found: {filepath}")
         return filepath.read_text(encoding='utf-8')
@@ -56,96 +73,51 @@ class ContextManager:
         """
         Write content to a file.
         
-        .md files are written to base_dir (same as spec.md).
-        Other files go to outputs/ subdirectory.
+        .md files are written to output/spec.
+        Other files go to output/code subdirectories.
         
         Args:
             filename: Name of the file
             content: Content to write
             subdir: Optional subdirectory within outputs
         """
-        # Write .md files to base_dir (same directory as spec.md)
+        self.spec_dir.mkdir(parents=True, exist_ok=True)
+        self.code_dir.mkdir(parents=True, exist_ok=True)
+
+        # Write .md files to output/spec
         if filename.endswith('.md'):
-            filepath = self.base_dir / filename
+            filepath = self.spec_dir / filename
         elif subdir:
-            output_path = self.outputs_dir / subdir
+            output_path = self.code_dir / subdir
             output_path.mkdir(parents=True, exist_ok=True)
             filepath = output_path / filename
         else:
-            self.outputs_dir.mkdir(parents=True, exist_ok=True)
-            filepath = self.outputs_dir / filename
+            filepath = self.code_dir / filename
         
         filepath.write_text(content, encoding='utf-8')
         return filepath
     
+    def _resolve_path(self, filename: str, subdir: Optional[str] = None) -> Path:
+        """Return the canonical Path for a given filename and optional subdir."""
+        if filename == "constitution.md":
+            return self.base_dir / filename
+        if filename.endswith('.md') and subdir is None:
+            return self.spec_dir / filename
+        if subdir:
+            return self.code_dir / subdir / filename
+        return self.code_dir / filename
+
     def file_exists(self, filename: str, subdir: Optional[str] = None) -> bool:
         """Check if a file exists."""
-        # .md files are in base_dir
-        if filename.endswith('.md') and not subdir:
-            filepath = self.base_dir / filename
-        elif subdir:
-            filepath = self.outputs_dir / subdir / filename
-        else:
-            filepath = self.outputs_dir / filename
-        return filepath.exists()
-    
+        return self._resolve_path(filename, subdir).exists()
+
     def read_output(self, filename: str, subdir: Optional[str] = None) -> str:
         """Read a previously generated output file."""
-        # .md files are in base_dir
-        if filename.endswith('.md') and not subdir:
-            filepath = self.base_dir / filename
-        elif subdir:
-            filepath = self.outputs_dir / subdir / filename
-        else:
-            filepath = self.outputs_dir / filename
-        
+        filepath = self._resolve_path(filename, subdir)
         if not filepath.exists():
             raise FileNotFoundError(f"Output file not found: {filepath}")
         return filepath.read_text(encoding='utf-8')
     
-    def extract_code_blocks(self, markdown_content: str) -> List[Dict[str, str]]:
-        """
-        Extract code blocks from markdown content.
-        
-        Returns:
-            List of dicts with 'language', 'filename', 'code' keys
-        """
-        code_blocks = []
-        lines = markdown_content.split('\n')
-        i = 0
-        
-        while i < len(lines):
-            line = lines[i].strip()
-            
-            # Look for code blocks with language and optional filename
-            if line.startswith('```'):
-                lang = line[3:].strip()
-                
-                # Extract filename from previous line if it looks like a file path
-                filename = None
-                if i > 0:
-                    prev_line = lines[i-1].strip()
-                    if prev_line.startswith('**File**:') or prev_line.startswith('File:'):
-                        filename = prev_line.split(':', 1)[1].strip()
-                
-                # Collect code lines
-                code_lines = []
-                i += 1
-                while i < len(lines) and not lines[i].strip().startswith('```'):
-                    code_lines.append(lines[i])
-                    i += 1
-                
-                code_blocks.append({
-                    'language': lang,
-                    'filename': filename,
-                    'code': '\n'.join(code_lines)
-                })
-            
-            i += 1
-        
-        return code_blocks
-
-
 class SpecOrchestrator:
     """
     Orchestrates the spec-driven development workflow.
@@ -190,20 +162,17 @@ class SpecOrchestrator:
         self.tasks: Optional[str] = None
         self.research: Optional[str] = None
         self.data_model: Optional[str] = None
+        self.quickstart: Optional[str] = None
+        self.contracts: Optional[str] = None
         
         self._started = False
     
     async def start(self):
         """Initialize the code generator agent."""
         if not self._started:
-            provider = (
-                AnthropicCommandProvider()
-                if self.agent_type == "claude"
-                else CopilotCommandProvider()
-            )
             self.code_generator = CodeGenerator(
                 agent_type=self.agent_type,
-                context_provider=provider,
+                context_provider=_make_provider(self.agent_type),
             )
             await self.code_generator._ensure_started()
             self._started = True
@@ -223,6 +192,56 @@ class SpecOrchestrator:
         """Cleanup on exit."""
         await self.stop()
         return False
+
+    async def _resolve_spec_clarifications(self, spec_text: str) -> str:
+        """Resolve all clarification markers via terminal Q&A and assumptions."""
+        round_number = 1
+        assumptions_log: List[Dict[str, str]] = []
+
+        while True:
+            markers = _extract_clarification_markers(spec_text)
+            if not markers:
+                break
+
+            print(f"\n[CLARIFY] Round {round_number}: {len(markers)} open clarification items")
+            if round_number <= 3:
+                for question in markers:
+                    print(f"\n[QUESTION] {question}")
+                    answer = input("Answer (leave blank to defer): ").strip()
+                    if answer:
+                        spec_text = _replace_clarification(spec_text, question, answer)
+            else:
+                assumptions = await _generate_assumptions(self.code_generator, spec_text, markers)
+                for question in markers:
+                    assumption = assumptions.get(question, f"Assume standard default: {question}")
+                    spec_text = _replace_clarification(spec_text, question, assumption)
+                    assumptions_log.append({
+                        "question": question,
+                        "assumption": assumption,
+                        "rationale": "Applied after iterative clarification rounds to unblock planning.",
+                    })
+                break
+
+            round_number += 1
+
+        # Persist merged spec
+        self.context_manager.write_file("spec.md", spec_text)
+
+        if assumptions_log:
+            assumptions_path = self.context_manager.write_file(
+                "assumptions.md", _format_assumptions_markdown(assumptions_log)
+            )
+            print(f"[OK] Assumptions recorded at: {assumptions_path}")
+
+            while True:
+                approve = input("Approve assumptions? (yes/no): ").strip().lower()
+                if approve in {"yes", "y"}:
+                    break
+                if approve in {"no", "n"}:
+                    raise RuntimeError("Workflow cancelled: assumptions were rejected by user")
+                print("Please enter 'yes' or 'no'")
+
+        return spec_text
     
     async def load_context(self) -> Dict[str, str]:
         """
@@ -240,10 +259,28 @@ class SpecOrchestrator:
         
         try:
             self.spec = self.context_manager.read_file("spec.md")
-            print(f"[OK] Loaded specification ({len(self.spec)} chars)")
-        except FileNotFoundError as e:
-            print(f"[FAIL] {e}")
-            raise
+            print(f"[OK] Loaded specification ({len(self.spec)} chars) from output/spec/spec.md")
+        except FileNotFoundError:
+            print("[INFO] output/spec/spec.md not found.")
+            user_input = ""
+            while not user_input.strip():
+                user_input = input("Describe what you want to build: ").strip()
+                if not user_input:
+                    print("Please provide a non-empty feature description.")
+
+            if not self._started:
+                await self.start()
+
+            prompt = get_spec_prompt(
+                user_input=user_input,
+                template_dir=get_template_dir(self.agent_type),
+            )
+            print("[...] Generating specification from user input...")
+            self.spec = await self.code_generator.generate_spec(prompt)
+            spec_path = self.context_manager.write_file("spec.md", self.spec)
+            print(f"[OK] Spec generated and saved to: {spec_path}")
+
+        self.spec = await self._resolve_spec_clarifications(self.spec)
         
         return {
             'constitution': self.constitution,
@@ -362,6 +399,62 @@ class SpecOrchestrator:
         
         return self.data_model
     
+    async def generate_quickstart(self, save: bool = True) -> str:
+        """
+        Generate developer quickstart guide (Plan phase).
+        
+        Returns:
+            Generated quickstart guide as markdown string
+        """
+        if not self._started:
+            await self.start()
+        
+        if not self.spec or not self.plan:
+            raise ValueError("Must have spec and plan before generating quickstart")
+        
+        print(f"\n{'='*60}")
+        print("PHASE 1: Generating Quickstart Guide")
+        print(f"{'='*60}")
+        
+        prompt = get_quickstart_prompt(self.constitution, self.spec, self.plan)
+        
+        print("\n[...] Generating quickstart guide...")
+        self.quickstart = await self.code_generator.generate(prompt)
+        
+        if save:
+            filepath = self.context_manager.write_file("quickstart.md", self.quickstart)
+            print(f"[OK] Quickstart saved to: {filepath}")
+        
+        return self.quickstart
+    
+    async def generate_contracts(self, save: bool = True) -> str:
+        """
+        Generate API contracts document (Plan phase).
+        
+        Returns:
+            Generated contracts document as markdown string
+        """
+        if not self._started:
+            await self.start()
+        
+        if not self.spec or not self.plan:
+            raise ValueError("Must have spec and plan before generating contracts")
+        
+        print(f"\n{'='*60}")
+        print("PHASE 1: Generating API Contracts")
+        print(f"{'='*60}")
+        
+        prompt = get_contracts_prompt(self.constitution, self.spec, self.plan)
+        
+        print("\n[...] Generating API contracts...")
+        self.contracts = await self.code_generator.generate(prompt)
+        
+        if save:
+            filepath = self.context_manager.write_file("contracts.md", self.contracts)
+            print(f"[OK] Contracts saved to: {filepath}")
+        
+        return self.contracts
+
     async def generate_tasks(self, save: bool = True) -> str:
         """
         Generate task breakdown (Phase 4).
@@ -382,12 +475,15 @@ class SpecOrchestrator:
         print("PHASE 4: Generating Task Breakdown")
         print(f"{'='*60}")
         
-        # Generate prompt
+        # Generate prompt — include all plan-phase companion docs as context
         prompt = get_tasks_prompt(
             self.constitution,
             self.spec,
             self.plan,
             template_dir=get_template_dir(self.agent_type),
+            research=self.research or "",
+            data_model=self.data_model or "",
+            contracts=self.contracts or "",
         )
 
         # Generate tasks
@@ -443,6 +539,10 @@ class SpecOrchestrator:
                 self.plan,
                 self.tasks,
                 task_item,
+                research=self.research or "",
+                data_model=self.data_model or "",
+                quickstart=self.quickstart or "",
+                contracts=self.contracts or "",
             )
 
             try:
@@ -453,7 +553,7 @@ class SpecOrchestrator:
 
                 if save_code:
                     # Extract first code block and write it immediately
-                    code_blocks = self.context_manager.extract_code_blocks(task_impl)
+                    code_blocks = _extract_code_blocks(task_impl)
                     if code_blocks:
                         file_path = Path(task_item["file_path"])
                         saved_path = self.context_manager.write_file(
@@ -489,16 +589,15 @@ class SpecOrchestrator:
     async def run_full_workflow(
         self,
         tech_stack: str,
-        include_research: bool = False,
-        include_data_model: bool = False
     ) -> Dict[str, Any]:
         """
         Execute the complete workflow from plan to implementation.
         
+        Generates all plan-phase documents (research, data-model, quickstart,
+        contracts) along with tasks and implementation.
+        
         Args:
             tech_stack: Technology stack and architecture description
-            include_research: Whether to generate research document
-            include_data_model: Whether to generate data model
             
         Returns:
             Dict with all generated artifacts
@@ -524,19 +623,23 @@ class SpecOrchestrator:
             'agent_type': self.agent_type
         }
         
-        # Optional: Generate research
-        if include_research:
-            research = await self.generate_research(tech_stack)
-            results['research'] = research
+        # Generate research (plan phase, Phase 0)
+        research = await self.generate_research(tech_stack)
+        results['research'] = research
         
         # Generate plan
         plan = await self.generate_plan(tech_stack)
         results['plan'] = plan
         
-        # Optional: Generate data model
-        if include_data_model:
-            data_model = await self.generate_data_model()
-            results['data_model'] = data_model
+        # Generate remaining plan-phase companion documents
+        data_model = await self.generate_data_model()
+        results['data_model'] = data_model
+        
+        quickstart = await self.generate_quickstart()
+        results['quickstart'] = quickstart
+        
+        contracts = await self.generate_contracts()
+        results['contracts'] = contracts
         
         # Generate tasks
         tasks = await self.generate_tasks()
@@ -550,16 +653,16 @@ class SpecOrchestrator:
         print("WORKFLOW COMPLETE!")
         print(f"{'='*70}")
         print("Generated artifacts:")
+        print(f"  [OK] research.md")
         print(f"  [OK] plan.md")
+        print(f"  [OK] data-model.md")
+        print(f"  [OK] quickstart.md")
+        print(f"  [OK] contracts.md")
         print(f"  [OK] tasks.md")
         print(f"  [OK] implementation.md")
-        if include_research:
-            print(f"  [OK] research.md")
-        if include_data_model:
-            print(f"  [OK] data-model.md")
         print(f"  [OK] {results['file_count']} code files")
-        print(f"\nMarkdown files location: {self.base_dir}")
-        print(f"Code files location: {self.context_manager.outputs_dir}")
+        print(f"\nMarkdown files location: {self.context_manager.spec_dir}")
+        print(f"Code files location: {self.context_manager.code_dir}")
         print(f"{'='*70}\n")
         
         return results
@@ -650,12 +753,12 @@ class SpecOrchestrator:
         
         # Check required input files
         validations['constitution_exists'] = self.base_dir.joinpath('constitution.md').exists()
-        validations['spec_exists'] = self.base_dir.joinpath('spec.md').exists()
+        validations['spec_exists'] = self.context_manager.spec_dir.joinpath('spec.md').exists()
         
-        # Check generated files (.md files are now in base_dir, not outputs_dir)
-        validations['plan_generated'] = self.base_dir.joinpath('plan.md').exists()
-        validations['tasks_generated'] = self.base_dir.joinpath('tasks.md').exists()
-        validations['implementation_generated'] = self.base_dir.joinpath('implementation.md').exists()
+        # Check generated markdown files in output/spec
+        validations['plan_generated'] = self.context_manager.spec_dir.joinpath('plan.md').exists()
+        validations['tasks_generated'] = self.context_manager.spec_dir.joinpath('tasks.md').exists()
+        validations['implementation_generated'] = self.context_manager.spec_dir.joinpath('implementation.md').exists()
         
         # Check if tasks follow proper format
         if validations['tasks_generated']:

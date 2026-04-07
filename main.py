@@ -1,60 +1,80 @@
+"""
+Spec-Driven Development — Entry Point
+
+Runs the full workflow:
+  1. Load constitution.md + spec.md
+  2. Generate: research → plan → data-model → quickstart → contracts
+  3. Generate: tasks (human approval gate)
+  4. Execute: implementation (file-by-file code generation)
+
+Configuration via environment variables (or .env file):
+  AGENT_TYPE          - "github_copilot" (default) or "claude"
+  BASE_DIR            - project folder containing constitution.md / spec.md
+                        (default: "co-pilot")
+  TECH_STACK          - technology description forwarded to every prompt
+                        (default: "Python 3.10+")
+  GITHUB_COPILOT_MODEL / CLAUDE_MODEL  - override the LLM model if needed
+"""
+
 import os
 import asyncio
+from pathlib import Path
 from dotenv import load_dotenv
-from code_generator import CodeGenerator
 
-# Load environment variables
+from spec_orchestrator import SpecOrchestrator
+
 load_dotenv(override=True)
 
 
-async def main():
-    """Main function to run the code generation agent."""
+def _banner(title: str, width: int = 70) -> None:
+    print(f"\n{'='*width}")
+    print(title)
+    print(f"{'='*width}")
+
+
+async def main() -> None:
     agent_type = os.getenv("AGENT_TYPE", "github_copilot").lower()
-    
-    print("Code Generator Agent")
-    print("=" * 50)
-    print(f"\nAgent Type: {agent_type.upper()}")
-    
-    if agent_type == "claude":
-        model = os.getenv("CLAUDE_MODEL", "sonnet")
-        print(f"Using model: {model}")
-        print("\nTip: Set AGENT_TYPE=claude and CLAUDE_MODEL in .env")
-        print("     Available models: sonnet, opus, haiku")
-    else:
-        model = os.getenv("GITHUB_COPILOT_MODEL", "gpt-5.2")
-        print(f"Using model: {model}")
-        print("\nTip: Set AGENT_TYPE=github_copilot and GITHUB_COPILOT_MODEL in .env")
-        print("     Available models: gpt-5.2, gpt-4o, claude-sonnet-4, o1, etc.")
-    
-    print()
-    
-    # Initialize the code generator with async context manager
-    async with CodeGenerator() as generator:
-        # Interactive mode
-        while True:
-            print("\nEnter your code generation prompt (or 'quit' to exit):")
-            prompt = input("> ").strip()
-            
-            if prompt.lower() in ['quit', 'exit', 'q']:
-                print("Goodbye!")
-                break
-            
-            if not prompt:
-                print("Please enter a valid prompt.")
-                continue
-            
-            try:
-                print("\nGenerating code...")
-                result = await generator.generate(prompt)
-                print("\nGenerated Response:")
-                print("-" * 50)
-                print(result)
-                print("-" * 50)
-            except Exception as e:
-                print(f"\nError: {e}")
-                import traceback
-                traceback.print_exc()
-        # Resources automatically cleaned up!
+    base_dir   = os.getenv("BASE_DIR", "co-pilot")
+    tech_stack = os.getenv("TECH_STACK", "Python 3.14")
+
+    _banner("SPEC-DRIVEN DEVELOPMENT — FULL WORKFLOW")
+    print(f"  Agent     : {agent_type}")
+    print(f"  Base dir  : {base_dir}")
+    print(f"  Tech stack: {tech_stack}")
+
+    base_path = Path(base_dir)
+    if not base_path.exists():
+        print(f"\n[ERROR] Base directory not found: {base_path.resolve()}")
+        print("  Set BASE_DIR in your .env file or environment.")
+        return
+
+    if not (base_path / "constitution.md").exists():
+        print(f"\n[ERROR] Required file missing: {base_path / 'constitution.md'}")
+        print("  Create constitution.md before running the workflow.")
+        return
+
+    if not (base_path / "spec.md").exists():
+        print(f"\n[INFO] spec.md not found — workflow will prompt for a feature description and generate it.")
+
+    async with SpecOrchestrator(base_dir=base_dir, agent_type=agent_type) as orchestrator:
+        try:
+            results = await orchestrator.run_full_workflow(tech_stack=tech_stack)
+        except RuntimeError as exc:
+            # Workflow cancelled by user (e.g. assumptions rejected)
+            print(f"\n[CANCELLED] {exc}")
+            return
+        except Exception as exc:
+            print(f"\n[ERROR] Workflow failed: {exc}")
+            import traceback
+            traceback.print_exc()
+            return
+
+    _banner("DONE")
+    spec_dir = base_path / "output" / "spec"
+    code_dir = base_path / "output" / "code"
+    print(f"  Markdown artifacts : {spec_dir}")
+    print(f"  Generated code     : {code_dir}")
+    print(f"  Code files written : {results.get('file_count', 0)}")
 
 
 if __name__ == "__main__":
