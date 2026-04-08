@@ -39,6 +39,20 @@ def get_template_dir(agent_type: str, root: Optional[Path] = None) -> Optional[P
     base = Path(root) if root is not None else Path(__file__).parent
     return base / folder / "template"
 
+
+def get_command_dir(agent_type: str, root: Optional[Path] = None) -> Optional[Path]:
+    """Resolve the command directory for the given agent type.
+
+    Returns the Path to the command directory (e.g. co-pilot/command/) or None
+    if the agent_type is not recognised.
+    """
+    folder = _AGENT_FOLDER_MAP.get(agent_type.lower() if agent_type else "")
+    if folder is None:
+        return None
+    base = Path(root) if root is not None else Path(__file__).parent
+    return base / folder / "command"
+
+
 # Plan Generation Template (mirrors .specify/templates/commands/plan.md)
 PLAN_PROMPT_TEMPLATE = """🚨 IGNORE ALL LENGTH CONSTRAINTS - PROVIDE COMPLETE CONTENT 🚨
 
@@ -677,20 +691,77 @@ def _extract_template_main_sections(template_content: str) -> str:
     return compact if compact else template_content
 
 
+def _load_command(command_key: str, command_dir: Path) -> Optional[str]:
+    """Load a command file body, stripping YAML frontmatter.
+
+    Naming conventions tried in order:
+    - speckit.implementation.agent.md  (GitHub Copilot — implement phase only)
+    - speckit.{key}.agent.md           (GitHub Copilot — all other phases)
+    - speckit.{key}.md                 (Claude / Anthropic)
+
+    Returns the body text, or None if no matching file is found.
+    """
+    # For implement: co-pilot uses speckit.implementation.agent.md; claude uses speckit.implement.md
+    candidates = [f"speckit.{command_key}.agent.md", f"speckit.{command_key}.md"]
+    if command_key == "implement":
+        candidates.insert(0, "speckit.implementation.agent.md")
+    for filename in candidates:
+        path = command_dir / filename
+        if path.exists():
+            content = path.read_text(encoding="utf-8")
+            # Strip YAML frontmatter (--- ... ---)
+            if content.startswith("---"):
+                end = content.find("---", 3)
+                if end != -1:
+                    content = content[end + 3:].lstrip("\n")
+            print(f"[OK] Loaded command from: {path}")
+            return content
+    return None
+
+
+def _build_prompt(
+    command_body: Optional[str],
+    arguments_text: str,
+    template_content: Optional[str],
+    fallback_str: str,
+) -> str:
+    """Central prompt builder.
+
+    Uses ``command_body`` (with ``{arguments}`` substituted) as the base when
+    available; otherwise falls back to ``fallback_str``.  When
+    ``template_content`` is provided it is appended as a *Required Output
+    Structure* section.
+    """
+    base = command_body.replace("{arguments}", arguments_text) if command_body is not None else fallback_str
+    if template_content:
+        base += (
+            "\n\n---\n"
+            "## Required Output Structure\n\n"
+            "You MUST follow this exact template for your output.\n"
+            "Replace every `[PLACEHOLDER]` with real content.\n"
+            "Remove all HTML comments (`<!-- ... -->`) and `[REMOVE IF UNUSED]` markers.\n\n"
+            "```markdown\n"
+            f"{template_content}\n"
+            "```\n"
+            "\n\U0001f6a8 YOUR OUTPUT MUST MATCH THIS STRUCTURE EXACTLY \U0001f6a8\n"
+        )
+    return base
+
+
 def get_spec_prompt(
     user_input: str,
     template_dir: Optional[Path],
+    command_dir: Optional[Path] = None,
     max_prompt_tokens: Optional[int] = None,
 ) -> str:
     """
     Generate specification creation prompt.
 
-    Loads `spec-template.md` from the selected agent template directory,
-    performs in-memory `$ARGUMENTS` substitution, and trims low-priority
-    sections when input exceeds the prompt token budget.
+    Uses the ``speckit.specify`` command file (when ``command_dir`` is provided)
+    as the primary instructions and ``spec-template.md`` as the required output
+    structure.  Falls back to ``SPEC_PROMPT_TEMPLATE`` when no command file is
+    found.  Token-budget compaction of the template section is preserved.
     """
-    prompt = SPEC_PROMPT_TEMPLATE.format(user_input=user_input)
-
     template_content = ""
     if template_dir is not None:
         template_path = Path(template_dir) / "spec-template.md"
@@ -699,53 +770,23 @@ def get_spec_prompt(
             template_content = template_content.replace("$ARGUMENTS", user_input)
             print(f"[OK] Loaded spec template from: {template_path}")
 
-    if template_content:
-        prompt += (
-            "\n\n---\n"
-            "## Required Output Structure\n\n"
-            "You MUST follow this exact template for your output.\n"
-            "Replace every placeholder with real content.\n"
-            "Return only markdown content.\n\n"
-            "```markdown\n"
-            f"{template_content}\n"
-            "```\n"
-        )
+    command_body = _load_command("specify", command_dir) if command_dir is not None else None
+    fallback = SPEC_PROMPT_TEMPLATE.format(user_input=user_input)
+    prompt = _build_prompt(command_body, user_input, template_content or None, fallback)
 
-    budget = max_prompt_tokens
-    if budget is None:
-        budget = int(os.getenv("SPEC_PROMPT_MAX_TOKENS", str(_DEFAULT_SPEC_PROMPT_MAX_TOKENS)))
-
-    estimated = _estimate_tokens(prompt)
-    if estimated <= budget:
+    budget = max_prompt_tokens or int(os.getenv("SPEC_PROMPT_MAX_TOKENS", str(_DEFAULT_SPEC_PROMPT_MAX_TOKENS)))
+    if _estimate_tokens(prompt) <= budget:
         return prompt
 
     if template_content:
-        compact_template = _extract_template_main_sections(template_content)
-        compact_prompt = SPEC_PROMPT_TEMPLATE.format(user_input=user_input) + (
-            "\n\n---\n"
-            "## Required Output Structure (Compacted for token budget)\n\n"
-            "Follow this exact structure and fill placeholders with concrete values.\n\n"
-            "```markdown\n"
-            f"{compact_template}\n"
-            "```\n"
-        )
-        compact_estimated = _estimate_tokens(compact_prompt)
-        if compact_estimated <= budget:
-            print(
-                "[WARN] Spec prompt exceeded token budget; "
-                "using compact template view to stay within limits."
-            )
+        compact = _extract_template_main_sections(template_content)
+        compact_prompt = _build_prompt(command_body, user_input, compact or None, fallback)
+        if _estimate_tokens(compact_prompt) <= budget:
+            print("[WARN] Spec prompt exceeded token budget; using compact template view to stay within limits.")
             return compact_prompt
 
-    # Final fallback keeps user input intact and provides minimum template instruction.
-    print(
-        "[WARN] Spec prompt still above token budget after compaction; "
-        "falling back to concise prompt while preserving user intent."
-    )
-    return (
-        SPEC_PROMPT_TEMPLATE.format(user_input=user_input)
-        + "\n\nUse the standard spec template structure with all mandatory sections."
-    )
+    print("[WARN] Spec prompt still above token budget after compaction; falling back to concise prompt while preserving user intent.")
+    return fallback + "\n\nUse the standard spec template structure with all mandatory sections."
 
 
 def get_plan_prompt(
@@ -753,37 +794,31 @@ def get_plan_prompt(
     spec: str,
     user_input: str,
     template_dir: Optional[Path] = None,
+    command_dir: Optional[Path] = None,
 ) -> str:
     """
     Generate plan creation prompt.
 
-    If template_dir is provided and contains plan-template.md, the template
-    is appended so the agent uses it as the required output structure.
+    Uses the ``speckit.plan`` command file as primary instructions when
+    ``command_dir`` is provided, with ``plan-template.md`` appended as the
+    required output structure.  Falls back to ``PLAN_PROMPT_TEMPLATE`` when
+    no command file is available.
     """
-    prompt = PLAN_PROMPT_TEMPLATE.format(
-        constitution=constitution,
-        spec=spec,
-        user_input=user_input,
-    )
-
+    template_content = None
     if template_dir is not None:
         template_path = Path(template_dir) / "plan-template.md"
         if template_path.exists():
             template_content = template_path.read_text(encoding="utf-8")
             print(f"[OK] Loaded plan template from: {template_path}")
-            prompt += (
-                "\n\n---\n"
-                "## Required Output Structure\n\n"
-                "You MUST follow this exact template for your output.\n"
-                "Replace every `[PLACEHOLDER]` with real content.\n"
-                "Remove all HTML comments (`<!-- ... -->`) and `[REMOVE IF UNUSED]` markers.\n\n"
-                "```markdown\n"
-                f"{template_content}\n"
-                "```\n"
-                "\n\U0001f6a8 YOUR OUTPUT MUST MATCH THIS STRUCTURE EXACTLY \U0001f6a8\n"
-            )
 
-    return prompt
+    command_body = _load_command("plan", command_dir) if command_dir is not None else None
+    arguments_text = (
+        f"**Constitution**:\n{constitution}\n\n"
+        f"**Feature Specification**:\n{spec}\n\n"
+        f"**Tech Stack / Architecture**: {user_input}"
+    )
+    fallback = PLAN_PROMPT_TEMPLATE.format(constitution=constitution, spec=spec, user_input=user_input)
+    return _build_prompt(command_body, arguments_text, template_content, fallback)
 
 
 def get_tasks_prompt(
@@ -791,6 +826,7 @@ def get_tasks_prompt(
     spec: str,
     plan: str,
     template_dir: Optional[Path] = None,
+    command_dir: Optional[Path] = None,
     research: str = "",
     data_model: str = "",
     contracts: str = "",
@@ -798,18 +834,35 @@ def get_tasks_prompt(
     """
     Generate tasks creation prompt.
 
-    Includes all plan-phase companion documents (research, data-model, contracts)
-    as context when provided — matching the tasks-template.md Prerequisites.
-    If template_dir is provided and contains tasks-template.md, the template
-    is appended so the agent uses it as the required output structure.
+    Uses the ``speckit.tasks`` command file as primary instructions when
+    ``command_dir`` is provided; all context (including companion docs) is
+    packed into ``{arguments}``.  Falls back to ``TASKS_PROMPT_TEMPLATE``
+    with companion docs appended as separate sections when no command file
+    is found.  ``tasks-template.md`` is always appended as the required
+    output structure when ``template_dir`` is provided.
     """
-    prompt = TASKS_PROMPT_TEMPLATE.format(
-        constitution=constitution,
-        spec=spec,
-        plan=plan,
-    )
+    template_content = None
+    if template_dir is not None:
+        template_path = Path(template_dir) / "tasks-template.md"
+        if template_path.exists():
+            template_content = template_path.read_text(encoding="utf-8")
+            print(f"[OK] Loaded tasks template from: {template_path}")
 
-    # Append companion docs declared as Prerequisites in tasks-template.md
+    command_body = _load_command("tasks", command_dir) if command_dir is not None else None
+    if command_body is not None:
+        # Pack full context (including companion docs) into {arguments}
+        arguments_text = (
+            f"**Constitution**:\n{constitution}\n\n"
+            f"**Feature Specification**:\n{spec}\n\n"
+            f"**Implementation Plan**:\n{plan}"
+        )
+        for label, content in [("Research", research), ("Data Model", data_model), ("API Contracts", contracts)]:
+            if content:
+                arguments_text += f"\n\n**{label}**:\n{content}"
+        return _build_prompt(command_body, arguments_text, template_content, "")
+
+    # Fallback: existing behaviour — hardcoded template + companion sections + output template
+    prompt = TASKS_PROMPT_TEMPLATE.format(constitution=constitution, spec=spec, plan=plan)
     companion_sections: List[str] = []
     if research:
         companion_sections.append(f"**Research (research.md)**:\n{research}")
@@ -817,7 +870,6 @@ def get_tasks_prompt(
         companion_sections.append(f"**Data Model (data-model.md)**:\n{data_model}")
     if contracts:
         companion_sections.append(f"**API Contracts (contracts.md)**:\n{contracts}")
-
     if companion_sections:
         prompt += (
             "\n\n---\n"
@@ -826,25 +878,19 @@ def get_tasks_prompt(
             "Use them to derive tasks that align with the defined entities, endpoints, and structure.\n\n"
             + "\n\n".join(companion_sections)
         )
-
-    if template_dir is not None:
-        template_path = Path(template_dir) / "tasks-template.md"
-        if template_path.exists():
-            template_content = template_path.read_text(encoding="utf-8")
-            print(f"[OK] Loaded tasks template from: {template_path}")
-            prompt += (
-                "\n\n---\n"
-                "## Required Output Structure\n\n"
-                "You MUST follow this exact template for your output.\n"
-                "Replace every `[PLACEHOLDER]` with real content from the spec and plan.\n"
-                "Remove all HTML comments (`<!-- ... -->`) and sample/example tasks.\n"
-                "Generate ACTUAL tasks based on the spec and plan — do NOT keep sample tasks.\n\n"
-                "```markdown\n"
-                f"{template_content}\n"
-                "```\n"
-                "\n\U0001f6a8 YOUR OUTPUT MUST MATCH THIS STRUCTURE EXACTLY \U0001f6a8\n"
-            )
-
+    if template_content:
+        prompt += (
+            "\n\n---\n"
+            "## Required Output Structure\n\n"
+            "You MUST follow this exact template for your output.\n"
+            "Replace every `[PLACEHOLDER]` with real content from the spec and plan.\n"
+            "Remove all HTML comments (`<!-- ... -->`) and sample/example tasks.\n"
+            "Generate ACTUAL tasks based on the spec and plan — do NOT keep sample tasks.\n\n"
+            "```markdown\n"
+            f"{template_content}\n"
+            "```\n"
+            "\n\U0001f6a8 YOUR OUTPUT MUST MATCH THIS STRUCTURE EXACTLY \U0001f6a8\n"
+        )
     return prompt
 
 
@@ -857,20 +903,31 @@ def get_implement_prompt(
     data_model: str = "",
     quickstart: str = "",
     contracts: str = "",
+    command_dir: Optional[Path] = None,
 ) -> str:
     """Generate implementation prompt, including all plan-phase companion docs as context."""
-    # Extract constitution principles for checks
+    command_body = _load_command("implement", command_dir) if command_dir is not None else None
+    if command_body is not None:
+        arguments_text = (
+            f"**Constitution**:\n{constitution}\n\n"
+            f"**Feature Specification**:\n{spec}\n\n"
+            f"**Implementation Plan**:\n{plan}\n\n"
+            f"**Task List**:\n{tasks}"
+        )
+        for label, content in [("Research", research), ("Data Model", data_model), ("Quickstart", quickstart), ("API Contracts", contracts)]:
+            if content:
+                arguments_text += f"\n\n**{label}**:\n{content}"
+        return _build_prompt(command_body, arguments_text, None, "")
+
+    # Fallback: existing behaviour
     constitution_checks = _extract_constitution_checks(constitution)
-    
     prompt = IMPLEMENT_PROMPT_TEMPLATE.format(
         constitution=constitution,
         spec=spec,
         plan=plan,
         tasks=tasks,
-        constitution_checks=constitution_checks
+        constitution_checks=constitution_checks,
     )
-
-    # Append companion docs so the implementer knows the exact entities, contracts, and setup
     companion_sections: List[str] = []
     if research:
         companion_sections.append(f"**Research (research.md)**:\n{research}")
@@ -880,7 +937,6 @@ def get_implement_prompt(
         companion_sections.append(f"**API Contracts (contracts.md)**:\n{contracts}")
     if quickstart:
         companion_sections.append(f"**Quickstart (quickstart.md)**:\n{quickstart}")
-
     if companion_sections:
         prompt += (
             "\n\n---\n"
@@ -889,7 +945,6 @@ def get_implement_prompt(
             "and file paths must match exactly.\n\n"
             + "\n\n".join(companion_sections)
         )
-
     return prompt
 
 
@@ -1044,8 +1099,25 @@ def get_implement_single_task_prompt(
     data_model: str = "",
     quickstart: str = "",
     contracts: str = "",
+    command_dir: Optional[Path] = None,
 ) -> str:
     """Generate a focused prompt to implement a single task/file."""
+    command_body = _load_command("implement", command_dir) if command_dir is not None else None
+    if command_body is not None:
+        arguments_text = (
+            f"**Constitution**:\n{constitution}\n\n"
+            f"**Feature Specification**:\n{spec}\n\n"
+            f"**Implementation Plan**:\n{plan}\n\n"
+            f"**Task List**:\n{tasks}\n\n"
+            f"**Current Task**: {task_item['id']} \u2014 {task_item['description']}\n"
+            f"**File to implement**: `{task_item['file_path']}`"
+        )
+        for label, content in [("Research", research), ("Data Model", data_model), ("Quickstart", quickstart), ("API Contracts", contracts)]:
+            if content:
+                arguments_text += f"\n\n**{label}**:\n{content}"
+        return _build_prompt(command_body, arguments_text, None, "")
+
+    # Fallback: existing behaviour
     prompt = IMPLEMENT_SINGLE_TASK_PROMPT_TEMPLATE.format(
         constitution=constitution,
         spec=spec,
@@ -1056,8 +1128,6 @@ def get_implement_single_task_prompt(
         file_path=task_item["file_path"],
         language=task_item.get("language", ""),
     )
-
-    # Append companion docs so the implementer has exact entity shapes and contracts
     companion_sections: List[str] = []
     if research:
         companion_sections.append(f"**Research (research.md)**:\n{research}")
@@ -1067,7 +1137,6 @@ def get_implement_single_task_prompt(
         companion_sections.append(f"**API Contracts (contracts.md)**:\n{contracts}")
     if quickstart:
         companion_sections.append(f"**Quickstart (quickstart.md)**:\n{quickstart}")
-
     if companion_sections:
         prompt += (
             "\n\n---\n"
@@ -1075,16 +1144,15 @@ def get_implement_single_task_prompt(
             "Implement precisely to these specifications.\n\n"
             + "\n\n".join(companion_sections)
         )
-
     return prompt
 
 
-def get_research_prompt(tech_stack: str, spec: str) -> str:
+def get_research_prompt(tech_stack: str, spec: str, command_dir: Optional[Path] = None) -> str:
     """Generate research prompt."""
-    return RESEARCH_PROMPT_TEMPLATE.format(
-        tech_stack=tech_stack,
-        spec=spec
-    )
+    command_body = _load_command("analyze", command_dir) if command_dir is not None else None
+    arguments_text = f"**Tech Stack**: {tech_stack}\n\n**Feature Specification**:\n{spec}"
+    fallback = RESEARCH_PROMPT_TEMPLATE.format(tech_stack=tech_stack, spec=spec)
+    return _build_prompt(command_body, arguments_text, None, fallback)
 
 
 def get_data_model_prompt(spec: str, plan: str) -> str:

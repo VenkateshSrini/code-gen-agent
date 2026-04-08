@@ -42,6 +42,7 @@ from spec_templates import (
     get_tasks_prompt,
     get_implement_prompt,
     get_template_dir,
+    get_command_dir,
     parse_task_items,
     get_implement_single_task_prompt,
     get_research_prompt,
@@ -250,6 +251,33 @@ def _extract_code_blocks(markdown_content: str) -> List[Dict[str, str]]:
     return code_blocks
 
 
+def _prompt_md_files_review(spec_dir: Path) -> None:
+    """List generated Markdown files and ask the user to confirm before implementation.
+
+    Raises RuntimeError if the user declines, cancelling the workflow.
+    """
+    md_files = sorted(spec_dir.glob("*.md"))
+    print(f"\n{'='*60}")
+    print("REVIEW GENERATED MARKDOWN FILES")
+    print(f"{'='*60}")
+    if md_files:
+        print(f"Location: {spec_dir}\n")
+        for f in md_files:
+            print(f"  • {f.name}")
+    else:
+        print(f"  (no .md files found in {spec_dir})")
+    print(f"\nPlease review the files above before implementation begins.")
+    print(f"{'='*60}")
+    while True:
+        answer = input("Are all MD files correct? Proceed with implementation? (yes/no): ").strip().lower()
+        if answer in {"yes", "y"}:
+            print("[OK] Confirmed. Starting implementation...\n")
+            return
+        if answer in {"no", "n"}:
+            raise RuntimeError("Implementation cancelled: user requested to review/fix MD files first")
+        print("Please enter 'yes' or 'no'")
+
+
 # ---------------------------------------------------------------------------
 # Base executor — shared CodeGenerator lifecycle for all workflow executors
 # ---------------------------------------------------------------------------
@@ -295,6 +323,7 @@ class LoadAndRouteExecutor(_AgentExecutor):
         prompt = get_spec_prompt(
             user_input=user_input,
             template_dir=get_template_dir(self.agent_type),
+            command_dir=get_command_dir(self.agent_type),
         )
         print("\n[...] Generating specification from user input...")
         spec_text = await self.code_generator.generate_spec(prompt)
@@ -502,6 +531,7 @@ class GeneratePlanExecutor(_AgentExecutor):
             context.spec,
             tech_stack,
             template_dir=get_template_dir(self.agent_type),
+            command_dir=get_command_dir(self.agent_type),
         )
 
         # Generate plan
@@ -537,7 +567,7 @@ class GeneratePlanExecutor(_AgentExecutor):
         # Research (Phase 0 — uses spec + tech_stack)
         print("\n[...] Generating research.md...")
         research = await self.code_generator.generate(
-            get_research_prompt(context.tech_stack, context.spec)
+            get_research_prompt(context.tech_stack, context.spec, command_dir=get_command_dir(self.agent_type))
         )
         paths.research_file.write_text(research, encoding="utf-8")
         print(f"[OK] Research saved to: {paths.research_file}")
@@ -617,6 +647,7 @@ class GenerateTasksExecutor(_AgentExecutor):
             context.spec,
             plan_data.plan,
             template_dir=get_template_dir(self.agent_type),
+            command_dir=get_command_dir(self.agent_type),
             research=context.research,
             data_model=context.data_model,
             contracts=context.contracts,
@@ -737,6 +768,9 @@ class ExecuteImplementationExecutor(_AgentExecutor):
         paths = _resolve_artifact_paths(context.base_dir)
         paths.code_dir.mkdir(parents=True, exist_ok=True)
 
+        # Ask user to confirm all generated MD files look correct before proceeding
+        _prompt_md_files_review(paths.spec_dir)
+
         # Parse tasks into individual file-level items
         task_items = parse_task_items(tasks)
         total = len(task_items)
@@ -758,6 +792,7 @@ class ExecuteImplementationExecutor(_AgentExecutor):
                 data_model=context.data_model,
                 quickstart=context.quickstart,
                 contracts=context.contracts,
+                command_dir=get_command_dir(self.agent_type),
             )
 
             try:

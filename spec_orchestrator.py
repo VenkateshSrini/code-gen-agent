@@ -25,6 +25,7 @@ from spec_templates import (
     get_quickstart_prompt,
     get_contracts_prompt,
     get_template_dir,
+    get_command_dir,
     parse_task_items,
     get_implement_single_task_prompt,
 )
@@ -39,6 +40,7 @@ from spec_workflow import (
     _generate_assumptions,
     _format_assumptions_markdown,
     _extract_code_blocks,
+    _prompt_md_files_review,
 )
 
 
@@ -274,6 +276,7 @@ class SpecOrchestrator:
             prompt = get_spec_prompt(
                 user_input=user_input,
                 template_dir=get_template_dir(self.agent_type),
+                command_dir=get_command_dir(self.agent_type),
             )
             print("[...] Generating specification from user input...")
             self.spec = await self.code_generator.generate_spec(prompt)
@@ -316,6 +319,7 @@ class SpecOrchestrator:
             self.spec,
             tech_stack,
             template_dir=get_template_dir(self.agent_type),
+            command_dir=get_command_dir(self.agent_type),
         )
 
         # Generate plan
@@ -353,7 +357,7 @@ class SpecOrchestrator:
         print("PHASE 0: Generating Research Document")
         print(f"{'='*60}")
         
-        prompt = get_research_prompt(tech_stack, self.spec)
+        prompt = get_research_prompt(tech_stack, self.spec, command_dir=get_command_dir(self.agent_type))
         
         print("\n[...] Researching technologies...")
         research_response = await self.code_generator.generate(prompt)
@@ -481,6 +485,7 @@ class SpecOrchestrator:
             self.spec,
             self.plan,
             template_dir=get_template_dir(self.agent_type),
+            command_dir=get_command_dir(self.agent_type),
             research=self.research or "",
             data_model=self.data_model or "",
             contracts=self.contracts or "",
@@ -521,7 +526,10 @@ class SpecOrchestrator:
         print(f"\n{'='*60}")
         print("PHASE 5: Executing Implementation")
         print(f"{'='*60}")
-        
+
+        # Ask user to confirm all generated MD files look correct before proceeding
+        _prompt_md_files_review(self.context_manager.spec_dir)
+
         # Parse tasks into individual file-level items
         task_items = parse_task_items(self.tasks)
         total = len(task_items)
@@ -543,6 +551,7 @@ class SpecOrchestrator:
                 data_model=self.data_model or "",
                 quickstart=self.quickstart or "",
                 contracts=self.contracts or "",
+                command_dir=get_command_dir(self.agent_type),
             )
 
             try:
