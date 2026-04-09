@@ -9,8 +9,8 @@ Runs the full workflow:
 
 Configuration via environment variables (or .env file):
   AGENT_TYPE          - "github_copilot" (default) or "claude"
-  BASE_DIR            - project folder containing constitution.md / spec.md
-                        (default: "co-pilot")
+  BASE_DIR            - project folder containing constitution.md
+                        spec.md is read/written at {BASE_DIR}/output/spec/spec.md
   TECH_STACK          - technology description forwarded to every prompt
                         (default: "Python 3.10+")
   GITHUB_COPILOT_MODEL / CLAUDE_MODEL  - override the LLM model if needed
@@ -53,7 +53,7 @@ async def main() -> None:
         print("  Create constitution.md before running the workflow.")
         return
 
-    if not (base_path / "spec.md").exists():
+    if not (base_path / "output" / "spec" / "spec.md").exists():
         print(f"\n[INFO] spec.md not found — workflow will prompt for a feature description and generate it.")
 
     async with SpecOrchestrator(base_dir=base_dir, agent_type=agent_type) as orchestrator:

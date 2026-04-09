@@ -10,6 +10,7 @@ workflow orchestration with human-in-the-loop approval gates.
 
 import os
 import asyncio
+import shutil
 from pathlib import Path
 from typing import Optional, Dict, Any, List
 from datetime import datetime
@@ -595,25 +596,32 @@ class SpecOrchestrator:
             "file_count": len(generated_files),
         }
     
+    def _load_existing(self, filename: str) -> str:
+        """Return file content from output/spec if it exists, else empty string."""
+        path = self.context_manager.spec_dir / filename
+        return path.read_text(encoding="utf-8") if path.exists() else ""
+
     async def run_full_workflow(
         self,
         tech_stack: str,
     ) -> Dict[str, Any]:
         """
-        Execute the complete workflow from plan to implementation.
-        
-        Generates all plan-phase documents (research, data-model, quickstart,
-        contracts) along with tasks and implementation.
-        
-        Args:
-            tech_stack: Technology stack and architecture description
-            
-        Returns:
-            Dict with all generated artifacts
+        Execute the complete workflow with checkpoint/resume support.
+
+        Each stage is skipped when its output file already exists in output/spec/,
+        except code generation which always wipes output/code/ and regenerates.
+
+        Checkpoint order:
+          spec       -> output/spec/spec.md          (skipped if present)
+          plan phase -> output/spec/plan.md           (skipped if present; loads companions too)
+          tasks      -> output/spec/tasks.md          (skipped if present)
+          code       -> output/code/                  (always wiped and regenerated)
         """
         if not self._started:
             await self.start()
-        
+
+        spec_dir = self.context_manager.spec_dir
+
         print(f"\n{'='*70}")
         print("SPEC-DRIVEN DEVELOPMENT WORKFLOW")
         print(f"{'='*70}")
@@ -621,59 +629,81 @@ class SpecOrchestrator:
         print(f"Base Directory: {self.base_dir}")
         print(f"Timestamp: {datetime.now().isoformat()}")
         print(f"{'='*70}")
-        
-        # Load context
-        print("\n Loading Context...")
+
+        # ── Step 1: spec.md — load_context() handles skip-if-exists / generate ──
+        print("\n[CHECKPOINT] Loading context...")
         await self.load_context()
-        
-        results = {
+
+        results: Dict[str, Any] = {
             'constitution': self.constitution,
             'spec': self.spec,
-            'agent_type': self.agent_type
+            'agent_type': self.agent_type,
         }
-        
-        # Generate research (plan phase, Phase 0)
-        research = await self.generate_research(tech_stack)
-        results['research'] = research
-        
-        # Generate plan
-        plan = await self.generate_plan(tech_stack)
-        results['plan'] = plan
-        
-        # Generate remaining plan-phase companion documents
-        data_model = await self.generate_data_model()
-        results['data_model'] = data_model
-        
-        quickstart = await self.generate_quickstart()
-        results['quickstart'] = quickstart
-        
-        contracts = await self.generate_contracts()
-        results['contracts'] = contracts
-        
-        # Generate tasks
-        tasks = await self.generate_tasks()
-        results['tasks'] = tasks
-        
-        # Execute implementation
+
+        # ── Step 2: plan phase (research + plan + companion docs) ────────────────
+        plan_exists = (spec_dir / "plan.md").exists()
+
+        if plan_exists:
+            print("\n[SKIP] Plan phase — output/spec/plan.md already exists.")
+            self.plan       = self._load_existing("plan.md")
+            self.research   = self._load_existing("research.md")
+            self.data_model = self._load_existing("data-model.md")
+            self.quickstart = self._load_existing("quickstart.md")
+            self.contracts  = self._load_existing("contracts.md")
+        else:
+            print("\n[RUN] Plan phase — generating research, plan, and companion docs...")
+            self.research   = await self.generate_research(tech_stack)
+            self.plan       = await self.generate_plan(tech_stack)
+            self.data_model = await self.generate_data_model()
+            self.quickstart = await self.generate_quickstart()
+            self.contracts  = await self.generate_contracts()
+
+        results['research']   = self.research
+        results['plan']       = self.plan
+        results['data_model'] = self.data_model
+        results['quickstart'] = self.quickstart
+        results['contracts']  = self.contracts
+
+        # ── Step 3: tasks.md ─────────────────────────────────────────────────────
+        tasks_exists = (spec_dir / "tasks.md").exists()
+
+        if tasks_exists:
+            print("\n[SKIP] Task generation — output/spec/tasks.md already exists.")
+            self.tasks = self._load_existing("tasks.md")
+        else:
+            print("\n[RUN] Task generation...")
+            self.tasks = await self.generate_tasks()
+
+        results['tasks'] = self.tasks
+
+        # ── Step 4: implementation — always wipe code dir and regenerate ─────────
+        code_dir = self.context_manager.code_dir
+        if code_dir.exists():
+            print(f"\n[WIPE] Removing existing code at: {code_dir}")
+            shutil.rmtree(code_dir)
+        print("\n[RUN] Implementation — generating code files...")
         implementation_result = await self.execute_implementation()
         results.update(implementation_result)
-        
+
+        plan_tag  = " [skipped]" if plan_exists  else ""
+        tasks_tag = " [skipped]" if tasks_exists else ""
+
         print(f"\n{'='*70}")
         print("WORKFLOW COMPLETE!")
         print(f"{'='*70}")
         print("Generated artifacts:")
-        print(f"  [OK] research.md")
-        print(f"  [OK] plan.md")
-        print(f"  [OK] data-model.md")
-        print(f"  [OK] quickstart.md")
-        print(f"  [OK] contracts.md")
-        print(f"  [OK] tasks.md")
+        print(f"  [OK] research.md{plan_tag}")
+        print(f"  [OK] plan.md{plan_tag}")
+        print(f"  [OK] data-model.md{plan_tag}")
+        print(f"  [OK] quickstart.md{plan_tag}")
+        print(f"  [OK] contracts.md{plan_tag}")
+        print(f"  [OK] tasks.md{tasks_tag}")
         print(f"  [OK] implementation.md")
         print(f"  [OK] {results['file_count']} code files")
         print(f"\nMarkdown files location: {self.context_manager.spec_dir}")
         print(f"Code files location: {self.context_manager.code_dir}")
         print(f"{'='*70}\n")
-        
+
         return results
     
     async def run_workflow_with_approval(
