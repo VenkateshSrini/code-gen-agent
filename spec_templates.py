@@ -969,7 +969,7 @@ IMPLEMENT_SINGLE_TASK_PROMPT_TEMPLATE = """You are implementing ONE specific fil
 {tasks}
 
 ---
-
+__COMPANION_DOCS__
 ## CURRENT TASK
 
 **Task ID**: {task_id}  
@@ -984,6 +984,9 @@ IMPLEMENT_SINGLE_TASK_PROMPT_TEMPLATE = """You are implementing ONE specific fil
 2. Include all imports, docstrings, and type hints.
 3. No placeholders, no TODO comments — write actual working code.
 4. Follow patterns from the plan and constitution.
+5. Use entity field names and types EXACTLY as defined in the Data Model section above (if provided).
+6. Match endpoint paths, status codes, and response shapes EXACTLY as defined in the API Contracts section above (if provided).
+7. Use environment variable names, ports, and service names EXACTLY as defined in the Quickstart section above (if provided).
 
 ## Output Format
 
@@ -1016,15 +1019,97 @@ _FILE_EXTENSION_TO_LANGUAGE: Dict[str, str] = {
     ".ini": "ini",
     ".cfg": "ini",
     ".dockerfile": "dockerfile",
+    ".txt": "text",
+    ".html": "html",
+    ".css": "css",
+    ".lock": "text",
 }
+
+EXTENSIONLESS_FILES: frozenset = frozenset({
+    "Dockerfile", "dockerfile", "Makefile", "makefile",
+    "Procfile", ".gitignore", ".dockerignore",
+    "Jenkinsfile", ".editorconfig", ".flake8", ".pylintrc",
+})
 
 
 def _infer_language(file_path: str) -> str:
     """Infer fenced-code language from file extension."""
-    ext = Path(file_path).suffix.lower()
-    if Path(file_path).name.lower() == "dockerfile":
+    name = Path(file_path).name
+    if name.lower() == "dockerfile":
         return "dockerfile"
+    if name in EXTENSIONLESS_FILES:
+        return "dockerfile" if "docker" in name.lower() else "text"
+    ext = Path(file_path).suffix.lower()
     return _FILE_EXTENSION_TO_LANGUAGE.get(ext, "")
+
+
+def _looks_like_file(path: str) -> bool:
+    """Return True if path looks like a file (not a bare directory or version token)."""
+    name = Path(path).name
+    if name in EXTENSIONLESS_FILES:
+        return True
+    suffix = Path(path).suffix.lower()
+    return bool(suffix) and suffix in _FILE_EXTENSION_TO_LANGUAGE
+
+
+_MAX_COMPANION_CHARS: int = int(os.getenv("IMPL_COMPANION_MAX_CHARS", "6000"))
+
+
+def _trim_doc(content: str, label: str = "") -> str:
+    """Trim a companion document to _MAX_COMPANION_CHARS to stay within token budget."""
+    if len(content) <= _MAX_COMPANION_CHARS:
+        return content
+    truncated = content[:_MAX_COMPANION_CHARS]
+    last_newline = truncated.rfind("\n")
+    if last_newline > _MAX_COMPANION_CHARS // 2:
+        truncated = truncated[:last_newline]
+    tag = f" ({label})" if label else ""
+    return truncated + f"\n\n[... document{tag} truncated at {_MAX_COMPANION_CHARS} chars to stay within token budget ...]"
+
+
+def _build_companion_block(
+    research: str = "",
+    data_model: str = "",
+    contracts: str = "",
+    quickstart: str = "",
+) -> str:
+    """Build the companion documents block for injection into the single-task prompt.
+
+    Returns a formatted block with a Reference Documents header when any valid
+    companion doc is present, or a plain newline separator when all are absent.
+    Each document is trimmed to _MAX_COMPANION_CHARS.  Documents that contain
+    failure markers (aborted analysis, missing context) are silently skipped.
+    """
+    _FAILURE_MARKERS = ("analysis aborted", "\u274c", "missing from the provided context")
+
+    def _is_valid(content: str) -> bool:
+        if not content or not content.strip():
+            return False
+        lower = content.lower()
+        return not any(marker in lower for marker in _FAILURE_MARKERS)
+
+    sections: List[str] = []
+    for label, content in [
+        ("Research", research),
+        ("Data Model", data_model),
+        ("API Contracts", contracts),
+        ("Quickstart", quickstart),
+    ]:
+        if _is_valid(content):
+            sections.append(f"### {label}\n\n{_trim_doc(content, label=label)}")
+
+    if not sections:
+        return "\n\n"
+
+    body = "\n\n---\n\n".join(sections)
+    return (
+        "\n## Reference Documents\n\n"
+        "> Authoritative source for entity names, endpoint signatures, "
+        "environment variable names, and library versions. "
+        "Your implementation MUST match these specifications exactly.\n\n"
+        + body
+        + "\n\n---\n\n"
+    )
 
 
 def parse_task_items(tasks_content: str) -> List[Dict[str, str]]:
@@ -1042,7 +1127,8 @@ def parse_task_items(tasks_content: str) -> List[Dict[str, str]]:
 
     for line in tasks_content.split("\n"):
         # Match: - [ ] T001 [P] some description in `path/file.py`
-        m = re.match(r"^\s*-\s*\[[ x]\]\s*(T\d+)\s+(?:\[P\]\s+)?(.+)$", line)
+        # Also handles [US1], [US2], and any other bracketed tag markers after the task ID.
+        m = re.match(r"^\s*-\s*\[[ x]\]\s*(T\d+)\s+(?:\[[A-Z0-9]+\]\s+)*(.+)$", line)
         if not m:
             continue
 
@@ -1052,10 +1138,10 @@ def parse_task_items(tasks_content: str) -> List[Dict[str, str]]:
         # All backtick-quoted items on this line
         backtick_items = re.findall(r"`([^`]+)`", description)
 
-        # Keep only items that look like files (have an extension, not ending in /)
+        # Keep only items that look like files (have a known extension or are extensionless known files)
         file_items = [
             item for item in backtick_items
-            if not item.endswith("/") and "." in PurePosixPath(item).name
+            if not item.endswith("/") and _looks_like_file(item)
         ]
 
         # Fallback: match unquoted file paths (paths with slashes or known extensions)
@@ -1070,21 +1156,21 @@ def parse_task_items(tasks_content: str) -> List[Dict[str, str]]:
             bare_items = path_like + filename_like
             file_items = [
                 p for p in bare_items
-                if not p.endswith("/") and "." in PurePosixPath(p).name
+                if not p.endswith("/") and _looks_like_file(p)
             ]
 
         if not file_items:
             continue
 
-        # Use the LAST backtick file path ("in `src/models/user.py`" pattern)
-        primary_file = file_items[-1].strip()
-
-        task_items.append({
-            "id": task_id,
-            "description": description,
-            "file_path": primary_file,
-            "language": _infer_language(primary_file),
-        })
+        # Yield one task_item per file path found on this line
+        for fp in file_items:
+            fp = fp.strip()
+            task_items.append({
+                "id": task_id,
+                "description": description,
+                "file_path": fp,
+                "language": _infer_language(fp),
+            })
 
     return task_items
 
@@ -1101,24 +1187,25 @@ def get_implement_single_task_prompt(
     contracts: str = "",
     command_dir: Optional[Path] = None,
 ) -> str:
-    """Generate a focused prompt to implement a single task/file."""
-    command_body = _load_command("implement", command_dir) if command_dir is not None else None
-    if command_body is not None:
-        arguments_text = (
-            f"**Constitution**:\n{constitution}\n\n"
-            f"**Feature Specification**:\n{spec}\n\n"
-            f"**Implementation Plan**:\n{plan}\n\n"
-            f"**Task List**:\n{tasks}\n\n"
-            f"**Current Task**: {task_item['id']} \u2014 {task_item['description']}\n"
-            f"**File to implement**: `{task_item['file_path']}`"
-        )
-        for label, content in [("Research", research), ("Data Model", data_model), ("Quickstart", quickstart), ("API Contracts", contracts)]:
-            if content:
-                arguments_text += f"\n\n**{label}**:\n{content}"
-        return _build_prompt(command_body, arguments_text, None, "")
+    """Generate a focused prompt to implement a single task/file.
 
-    # Fallback: existing behaviour
-    prompt = IMPLEMENT_SINGLE_TASK_PROMPT_TEMPLATE.format(
+    Always uses IMPLEMENT_SINGLE_TASK_PROMPT_TEMPLATE directly.  The
+    speckit.implement command file is an interactive orchestration prompt
+    (process all tasks, check checklists, run phases) and is incompatible
+    with single-file programmatic generation — the model returns orchestration
+    prose rather than a fenced code block.  command_dir is accepted for
+    signature compatibility but is intentionally ignored here.
+
+    Companion documents (research, data_model, contracts, quickstart) are
+    injected via the ``__COMPANION_DOCS__`` sentinel BEFORE the current task
+    definition so the model reads them as authoritative context before writing
+    code.  The sentinel is replaced after ``.format()`` so that JSON braces
+    inside companion docs never break string formatting.  Each document is
+    trimmed to _MAX_COMPANION_CHARS (env ``IMPL_COMPANION_MAX_CHARS``) to
+    stay within token budget.  Failed or empty documents are silently skipped.
+    """
+    companion_block = _build_companion_block(research, data_model, contracts, quickstart)
+    return IMPLEMENT_SINGLE_TASK_PROMPT_TEMPLATE.format(
         constitution=constitution,
         spec=spec,
         plan=plan,
@@ -1127,29 +1214,18 @@ def get_implement_single_task_prompt(
         description=task_item["description"],
         file_path=task_item["file_path"],
         language=task_item.get("language", ""),
-    )
-    companion_sections: List[str] = []
-    if research:
-        companion_sections.append(f"**Research (research.md)**:\n{research}")
-    if data_model:
-        companion_sections.append(f"**Data Model (data-model.md)**:\n{data_model}")
-    if contracts:
-        companion_sections.append(f"**API Contracts (contracts.md)**:\n{contracts}")
-    if quickstart:
-        companion_sections.append(f"**Quickstart (quickstart.md)**:\n{quickstart}")
-    if companion_sections:
-        prompt += (
-            "\n\n---\n"
-            "## Plan-Phase Documents (reference for this task)\n\n"
-            "Implement precisely to these specifications.\n\n"
-            + "\n\n".join(companion_sections)
-        )
-    return prompt
+    ).replace("__COMPANION_DOCS__", companion_block)
 
 
 def get_research_prompt(tech_stack: str, spec: str, command_dir: Optional[Path] = None) -> str:
-    """Generate research prompt."""
-    command_body = _load_command("analyze", command_dir) if command_dir is not None else None
+    """Generate research prompt.
+
+    Uses ``speckit.research`` command file when present.  Falls back to
+    ``RESEARCH_PROMPT_TEMPLATE`` otherwise (which is the normal case — the
+    ``speckit.analyze`` command is a post-tasks cross-artifact validator and
+    must NOT be used here; it aborts when plan.md/tasks.md are absent).
+    """
+    command_body = _load_command("research", command_dir) if command_dir is not None else None
     arguments_text = f"**Tech Stack**: {tech_stack}\n\n**Feature Specification**:\n{spec}"
     fallback = RESEARCH_PROMPT_TEMPLATE.format(tech_stack=tech_stack, spec=spec)
     return _build_prompt(command_body, arguments_text, None, fallback)
