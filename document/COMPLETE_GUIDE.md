@@ -1,6 +1,6 @@
 # AI Code Generator - Complete Guide
 
-**Last Updated**: February 19, 2026
+**Last Updated**: April 17, 2026
 
 > Comprehensive documentation for the AI Code Generator with Microsoft Agent Framework and Spec-Driven Development workflows.
 
@@ -48,6 +48,10 @@
 - [Advanced Usage](#advanced-usage)
 
 ### Reference
+- [Environment Setup Guide](#environment-setup-guide)
+  - [Backend 1: GitHub Copilot](#backend-1-github-copilot)
+  - [Backend 2: Claude API (Direct)](#backend-2-claude-api-direct)
+  - [Backend 3: AWS Bedrock](#backend-3-aws-bedrock)
 - [Configuration Reference](#configuration-reference)
 - [File Formats](#file-formats)
 - [External Resources](#external-resources)
@@ -1224,25 +1228,309 @@ jobs:
 
 ---
 
-<a name="configuration-reference"></a>
-## Configuration Reference
+<a name="environment-setup-guide"></a>
+## Environment Setup Guide
 
-### Environment Variables
+The AI Code Generator supports **three code companion backends**. You only need to configure the one(s) you intend to use. A complete `.env.example` is provided in the project root — copy it and fill in your values:
+
+```bash
+cp .env.example .env
+```
+
+### How the Backends Work
+
+```
+┌──────────────────────────────────────────────────────────────────────┐
+│                        CodeGenerator                                │
+│                    (AGENT_TYPE env var)                              │
+├─────────────────────┬────────────────────────────────────────────────┤
+│                     │                                                │
+│  "github_copilot"   │  "claude"                                      │
+│         │           │      │                                         │
+│         ▼           │      ▼                                         │
+│  _RobustCopilotAgent│   ClaudeAgent (MAF)                            │
+│         │           │      │                                         │
+│         ▼           │      ▼                                         │
+│  GitHub Copilot API │   ClaudeSDKClient                              │
+│                     │      │                                         │
+│                     │      ▼                                         │
+│                     │   Claude Code CLI (subprocess)                 │
+│                     │      │                                         │
+│                     │      ├──── ANTHROPIC_API_KEY → Anthropic API   │
+│                     │      │     (direct, default)                   │
+│                     │      │                                         │
+│                     │      └──── CLAUDE_CODE_USE_BEDROCK=1           │
+│                     │            + AWS creds → AWS Bedrock API       │
+└─────────────────────┴────────────────────────────────────────────────┘
+```
+
+> **Key insight**: AWS Bedrock is NOT a separate agent type. It's a backend switch for the Claude agent. Setting `CLAUDE_CODE_USE_BEDROCK=1` tells the Claude Code CLI to route LLM calls through Bedrock instead of the Anthropic API. All agentic capabilities (tool use, file I/O) are fully preserved.
+
+---
+
+<a name="backend-1-github-copilot"></a>
+### Backend 1: GitHub Copilot
+
+**When to use**: Default choice. Uses GitHub's infrastructure. Supports GPT and Claude models via the Copilot proxy.
+
+#### Prerequisites
+
+1. Active [GitHub Copilot subscription](https://github.com/features/copilot) (Individual, Business, or Enterprise)
+2. VS Code with the GitHub Copilot extension installed and signed in
+3. A [Personal Access Token (PAT)](https://github.com/settings/tokens) with `copilot` scope
+
+#### Setup
 
 ```env
-# Agent Selection
-AGENT_TYPE=github_copilot          # or "claude"
-
-# Claude Configuration
-ANTHROPIC_API_KEY=sk-ant-xxx       # Required for Claude
-CLAUDE_MODEL=sonnet                # sonnet, opus, haiku
-CLAUDE_AGENT_PERMISSION_MODE=default
-CLAUDE_AGENT_MAX_TURNS=50
-
-# GitHub Copilot Configuration
-GITHUB_COPILOT_MODEL=gpt-5.2-codex # gpt-5.2, gpt-4o, o1, etc.
-GITHUB_COPILOT_TIMEOUT=60
+# .env
+AGENT_TYPE=github_copilot
+COPILOT_GITHUB_TOKEN=github_pat_XXXXXXXXXXXXXXXXXXXX
+GITHUB_COPILOT_MODEL=gpt-5.3-codex
+GITHUB_COPILOT_TIMEOUT=900
 ```
+
+#### Available Models
+
+| Model | Description |
+|---|---|
+| `gpt-5.3-codex` | Default. Most capable for code generation |
+| `gpt-4o` | Fast, good general-purpose |
+| `claude-sonnet-4` | Claude Sonnet via Copilot proxy |
+| `o1` | Reasoning-focused |
+
+#### Verify
+
+```python
+import asyncio
+from code_generator import CodeGenerator
+
+async def main():
+    async with CodeGenerator(agent_type="github_copilot") as gen:
+        result = await gen.generate("Write a Python hello world function")
+        print(result)
+
+asyncio.run(main())
+```
+
+---
+
+<a name="backend-2-claude-api-direct"></a>
+### Backend 2: Claude API (Direct)
+
+**When to use**: When you want full Claude Code agentic capabilities (file I/O, bash, tools) via the Anthropic API directly.
+
+#### Prerequisites
+
+1. [Anthropic API key](https://console.anthropic.com/) (starts with `sk-ant-`)
+2. `agent-framework-claude` package (included in `agent-framework[all]`)
+
+#### How to Get an API Key
+
+1. Go to [console.anthropic.com](https://console.anthropic.com/)
+2. Navigate to **API Keys** → **Create Key**
+3. Copy the key
+
+#### Setup
+
+```env
+# .env
+AGENT_TYPE=claude
+ANTHROPIC_API_KEY=sk-ant-api03-XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
+CLAUDE_MODEL=sonnet
+CLAUDE_CODE_MAX_OUTPUT_TOKENS=92000
+```
+
+#### Available Models
+
+| Model | Description |
+|---|---|
+| `sonnet` | Default. Balanced speed and quality |
+| `opus` | Most capable, slower |
+| `haiku` | Fastest, best for simple tasks |
+
+#### Architecture Detail
+
+The Claude agent works through the **Claude Code CLI**, which is bundled inside the `claude-agent-sdk` Python package:
+
+```
+CodeGenerator(agent_type="claude")
+  → ClaudeAgent (agent-framework-claude)
+    → ClaudeSDKClient (claude-agent-sdk)
+      → Claude Code CLI subprocess
+        → Anthropic Messages API (using ANTHROPIC_API_KEY)
+```
+
+The CLI provides agentic capabilities: file reading/writing, bash execution, tool use, and MCP server support. Your `CodeGenerator` has write permissions denied to keep output as text responses.
+
+#### Verify
+
+```python
+import asyncio
+from code_generator import CodeGenerator
+
+async def main():
+    async with CodeGenerator(agent_type="claude") as gen:
+        result = await gen.generate("Write a Python hello world function")
+        print(result)
+
+asyncio.run(main())
+```
+
+---
+
+<a name="backend-3-aws-bedrock"></a>
+### Backend 3: AWS Bedrock
+
+**When to use**: When you want Claude's agentic capabilities but need to route LLM calls through your AWS account (cost control, compliance, data residency, enterprise billing).
+
+#### How It Works
+
+This is **not a code change** — it's a configuration switch. Setting `CLAUDE_CODE_USE_BEDROCK=1` tells the Claude Code CLI subprocess to use AWS Bedrock's Invoke API instead of the Anthropic API. Everything else (the agent, the SDK, the CLI, the tools) works identically.
+
+```
+CodeGenerator(agent_type="claude")
+  → ClaudeAgent (agent-framework-claude)        ← same
+    → ClaudeSDKClient (claude-agent-sdk)        ← same
+      → Claude Code CLI subprocess              ← same
+        → AWS Bedrock Invoke API                ← changed (was Anthropic API)
+          (uses AWS_ACCESS_KEY_ID / AWS_REGION)
+```
+
+#### Prerequisites
+
+1. **AWS account** with Bedrock access enabled
+2. **Enable Claude models in Bedrock** (one-time):
+   - Go to [Amazon Bedrock console](https://console.aws.amazon.com/bedrock/) → **Model catalog**
+   - Select the Anthropic Claude model you want (e.g., Claude Sonnet)
+   - Submit the use case form — access is granted immediately
+3. **IAM permissions** — attach this policy to your IAM user/role:
+   ```json
+   {
+     "Version": "2012-10-17",
+     "Statement": [
+       {
+         "Effect": "Allow",
+         "Action": [
+           "bedrock:InvokeModel",
+           "bedrock:InvokeModelWithResponseStream",
+           "bedrock:ListInferenceProfiles"
+         ],
+         "Resource": [
+           "arn:aws:bedrock:*:*:inference-profile/*",
+           "arn:aws:bedrock:*:*:application-inference-profile/*",
+           "arn:aws:bedrock:*:*:foundation-model/*"
+         ]
+       }
+     ]
+   }
+   ```
+4. **AWS credentials** via one of the options below
+
+#### Setup
+
+Add these to your `.env` (in addition to `AGENT_TYPE=claude` and `CLAUDE_MODEL`):
+
+```env
+# .env — Bedrock additions
+CLAUDE_CODE_USE_BEDROCK=1
+AWS_REGION=us-east-1
+```
+
+Then choose **one** authentication method:
+
+**Option A — Access Keys** (simplest for development):
+```env
+AWS_ACCESS_KEY_ID=AKIAIOSFODNN7EXAMPLE
+AWS_SECRET_ACCESS_KEY=wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY
+# AWS_SESSION_TOKEN=...   # only if using temporary credentials (STS)
+```
+
+**Option B — AWS CLI Profile** (preferred for SSO / multi-account):
+```env
+AWS_PROFILE=your-profile-name
+```
+First run: `aws sso login --profile=your-profile-name`
+
+**Option C — Bedrock API Key** (simplest, no full AWS credentials):
+```env
+AWS_BEARER_TOKEN_BEDROCK=your-bedrock-api-key
+```
+
+#### Model Pinning (Recommended)
+
+Without pinning, model aliases like `sonnet` resolve to the latest version. If Anthropic releases a new model version before it's enabled in your Bedrock account, the CLI falls back to the previous version — but you may want deterministic control:
+
+```env
+# Pin specific Bedrock model versions
+ANTHROPIC_DEFAULT_SONNET_MODEL=us.anthropic.claude-sonnet-4-5-20250929-v1:0
+ANTHROPIC_DEFAULT_OPUS_MODEL=us.anthropic.claude-opus-4-6
+ANTHROPIC_DEFAULT_HAIKU_MODEL=us.anthropic.claude-haiku-4-5-20251001-v1:0
+```
+
+Model IDs use the `us.` prefix for cross-region inference profiles. Adjust the prefix for your region.
+
+#### Switching Between Backends
+
+| To use... | Set in `.env` |
+|---|---|
+| Claude via Anthropic API | `AGENT_TYPE=claude` + `ANTHROPIC_API_KEY=...` |
+| Claude via AWS Bedrock | `AGENT_TYPE=claude` + `CLAUDE_CODE_USE_BEDROCK=1` + AWS creds |
+| Back to Anthropic API | Set `CLAUDE_CODE_USE_BEDROCK=0` or remove the line |
+| GitHub Copilot | `AGENT_TYPE=github_copilot` (Bedrock vars are ignored) |
+
+`ANTHROPIC_API_KEY` can remain in `.env` even when Bedrock is active — it is ignored when `CLAUDE_CODE_USE_BEDROCK=1` is set, and serves as a fallback if you disable Bedrock.
+
+#### Verify
+
+```python
+import asyncio
+from code_generator import CodeGenerator
+
+async def main():
+    async with CodeGenerator(agent_type="claude") as gen:
+        result = await gen.generate("Write a Python hello world function")
+        print(result)
+
+asyncio.run(main())
+```
+
+To confirm Bedrock is the actual backend:
+1. Temporarily remove `ANTHROPIC_API_KEY` from `.env`
+2. Run the test above — if it succeeds, Bedrock is active
+3. Restore `ANTHROPIC_API_KEY` afterward
+
+#### Cost & Operations Notes
+
+- **Billing**: Bedrock usage appears on your **AWS bill**, not Anthropic's. Use AWS Cost Explorer to track costs.
+- **Region latency**: Choose the AWS region closest to your workload. Ensure the Claude model is enabled there.
+- **Credential rotation**: For production, prefer AWS SSO or IAM roles over static access keys.
+- **Guardrails**: Bedrock supports content filtering — see [AWS Guardrails docs](https://docs.aws.amazon.com/bedrock/latest/userguide/guardrails.html).
+
+---
+
+### Complete `.env` Quick Reference
+
+```
+┌─────────────────────────┬─────────────────┬───────────┬───────────────────┐
+│ Variable                │ GitHub Copilot  │ Claude API│ Claude + Bedrock  │
+├─────────────────────────┼─────────────────┼───────────┼───────────────────┤
+│ AGENT_TYPE              │ github_copilot  │ claude    │ claude            │
+│ COPILOT_GITHUB_TOKEN    │ ✅ required     │ —         │ —                 │
+│ GITHUB_COPILOT_MODEL    │ ✅ optional     │ —         │ —                 │
+│ ANTHROPIC_API_KEY       │ —               │ ✅ required│ — (ignored)      │
+│ CLAUDE_MODEL            │ —               │ ✅ optional│ ✅ optional       │
+│ CLAUDE_CODE_USE_BEDROCK │ —               │ — (unset) │ ✅ = 1            │
+│ AWS_REGION              │ —               │ —         │ ✅ required        │
+│ AWS_ACCESS_KEY_ID       │ —               │ —         │ ✅ required*       │
+│ AWS_SECRET_ACCESS_KEY   │ —               │ —         │ ✅ required*       │
+└─────────────────────────┴─────────────────┴───────────┴───────────────────┘
+* Or use AWS_PROFILE / AWS_BEARER_TOKEN_BEDROCK instead of access keys.
+```
+
+---
+
+<a name="configuration-reference"></a>
+## Configuration Reference
 
 ### Orchestrator Configuration
 
@@ -1356,10 +1644,16 @@ Brief description of the project.
 - [Checkpoints](https://learn.microsoft.com/en-us/agent-framework/workflows/checkpoints)
 - [GitHub Repository](https://github.com/microsoft/agent-framework)
 
-### AI Agents
+### AI Agents & Cloud Providers
 
 - [GitHub Copilot](https://github.com/features/copilot)
 - [Anthropic Claude](https://www.anthropic.com/claude)
+- [Claude Code CLI Documentation](https://code.claude.com/docs/en/overview)
+- [Claude Agent SDK (Python)](https://pypi.org/project/claude-agent-sdk/)
+- [Amazon Bedrock — Claude Setup](https://code.claude.com/docs/en/amazon-bedrock)
+- [Amazon Bedrock Console](https://console.aws.amazon.com/bedrock/)
+- [Bedrock IAM Permissions](https://docs.aws.amazon.com/bedrock/latest/userguide/security-iam.html)
+- [Bedrock Pricing](https://aws.amazon.com/bedrock/pricing/)
 
 ### Inspiration
 
@@ -1372,6 +1666,7 @@ Brief description of the project.
 This guide covers:
 
 ✅ **Code Generator**: Interactive code generation with Claude/Copilot  
+✅ **Environment Setup**: Complete guide for GitHub Copilot, Claude API, and AWS Bedrock  
 ✅ **Spec-Driven Development**: Automated workflow from spec to implementation  
 ✅ **Microsoft Agent Framework**: Workflow orchestration with HITL approval  
 ✅ **Architecture**: System components and integration points  
@@ -1382,8 +1677,8 @@ This guide covers:
 
 ---
 
-**Version**: 1.0.0  
-**Last Updated**: February 19, 2026  
+**Version**: 1.1.0  
+**Last Updated**: April 17, 2026  
 **Framework**: Microsoft Agent Framework (Python)  
 **License**: [Your License]
 
